@@ -1,0 +1,45 @@
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: qwen-chat
+  namespace: kubeflow-user-example-com
+  annotations:
+    serving.kserve.io/deploymentMode: RawDeployment 
+    
+    # Optional: If you want to disable KServe's auto-HPA to manage replicas manually
+    # serving.kserve.io/autoscalerClass: "none"
+spec:
+  predictor:
+    model:
+      modelFormat:
+        name: vllm
+      runtime: kserve-vllm-custom
+      storageUri: "pvc://llm-workspace-pvc/Qwen--Qwen3-4B-Thinking-2507"
+      
+      # Resources for this specific model instance
+      resources:
+        limits:
+          cpu: "4"
+          memory: 16Gi
+          nvidia.com/gpu: "1"
+        requests:
+          cpu: "2"
+          memory: 8Gi
+          nvidia.com/gpu: "1"
+
+      env:
+        - name: VLLM_USE_V1
+          value: "0"
+        - name: VLLM_ATTENTION_BACKEND
+          value: "XFORMERS"
+        - name: HF_HUB_DISABLE_TELEMETRY
+          value: "1"
+
+      args:
+        - --port=8080
+        - --model=/mnt/models 
+        - --served-model-name=qwen
+        - --gpu-memory-utilization=0.95
+        - --max-model-len=6144
+        - --trust-remote-code
+        - --dtype=float16

@@ -1,0 +1,33 @@
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-qwen-external
+  namespace: istio-system  # IMPORTANT: Must be where the gateway pod lives
+spec:
+  selector:
+    matchLabels:
+      app: istio-ingressgateway # Selects the physical gateway pod
+  action: ALLOW
+  rules:
+  - to:
+    - operation:
+        hosts:
+        # EXACT MATCH of the Host header you use in Python
+        - "qwen-chat-kubeflow-user-example-com.example.com"
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-qwen-workload
+  namespace: kubeflow-user-example-com  # Your user namespace
+spec:
+  selector:
+    matchLabels:
+      # This targets your specific KServe model pod
+      serving.kserve.io/inferenceservice: qwen-chat
+  action: ALLOW
+  rules:
+  - to:
+    - operation:
+        paths:
+        - "/v1/*"  # Allow access to the API paths
