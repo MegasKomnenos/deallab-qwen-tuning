@@ -83,7 +83,7 @@ def monolith_op(
             "--data_root", data_root,
             "--subset_size", subset_size,
             "--max_steps", max_steps,
-            "--force_download", force_download
+            "--force_download", str(force_download)
         ]
     )
 

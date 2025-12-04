@@ -24,8 +24,11 @@ def main():
     parser.add_argument("--data_root", type=str, required=True)
     parser.add_argument("--subset_size", type=int, default=500)
     parser.add_argument("--max_steps", type=int, default=50)
-    parser.add_argument("--force_download", action="store_true")
+    parser.add_argument("--force_download", type=str, default="True")
     args = parser.parse_args()
+    
+    if isinstance(args.force_download, str):
+        args.force_download = args.force_download.lower() == "True"
 
     start_time = time.time()
 
