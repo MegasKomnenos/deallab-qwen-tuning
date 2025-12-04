@@ -8,7 +8,7 @@
 #    model_name: str [Default: 'Qwen/Qwen3-4B-Thinking-2507']
 #    model_pvc: str [Default: 'llm-workspace-pvc']
 #    subset_size: int [Default: 500.0]
-#    training_image_uri: str [Default: 'kjh123456/qwen-trainer:v19']
+#    training_image_uri: str [Default: 'kjh123456/qwen-trainer:v20']
 components:
   comp-download-dataset:
     executorLabel: exec-download-dataset
@@ -488,7 +488,7 @@ root:
         isOptional: true
         parameterType: NUMBER_INTEGER
       training_image_uri:
-        defaultValue: kjh123456/qwen-trainer:v19
+        defaultValue: kjh123456/qwen-trainer:v20
         isOptional: true
         parameterType: STRING
 schemaVersion: 2.1.0

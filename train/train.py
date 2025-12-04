@@ -126,12 +126,7 @@ def train():
         dataset_kwargs={"skip_prepare_dataset": True}
     )
     
-    response_template = "<|im_start|>assistant\n" 
-    
-    collator = DataCollatorForLanguageModeling(
-        response_template=response_template, 
-        tokenizer=tokenizer
-    )
+    collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
     trainer = SFTTrainer(
         model=model,

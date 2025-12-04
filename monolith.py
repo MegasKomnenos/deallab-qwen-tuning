@@ -97,12 +97,7 @@ def main():
         remove_unused_columns=False, max_length=2048, dataset_text_field="input_ids", dataset_kwargs={"skip_prepare_dataset": True}
     )
     
-    response_template = "<|im_start|>assistant\n" 
-    
-    collator = DataCollatorForLanguageModeling(
-        response_template=response_template, 
-        tokenizer=tokenizer
-    )
+    collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
     trainer = SFTTrainer(model=model, train_dataset=train_dataset, peft_config=peft_config, args=training_args, tokenizer=tokenizer, data_collator=response_template)
     trainer.train()
