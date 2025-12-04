@@ -17,11 +17,13 @@ MOUNT_PATH_DATA = "/mnt/data"
 # COMPONENT 1 & 2: INGESTION (Unchanged, included for context)
 # -------------------------------------------------------------------------
 @dsl.component(base_image=BASE_IMAGE, packages_to_install=["huggingface_hub"])
-def download_model(model_name: str, model_root: str) -> str:
+def download_model(model_name: str, model_root: str, force_download: bool) -> str:
     import os
     from huggingface_hub import snapshot_download
     safe_name = model_name.replace("/", "--")
     save_path = os.path.join(model_root, "base_models", safe_name)
+    if os.path.exists(save_path) and force_download:
+        shutil.rmtree(save_path)
     snapshot_download(repo_id=model_name, local_dir=save_path, local_dir_use_symlinks=False)
     return save_path
 
@@ -282,12 +284,12 @@ def llm_pipeline(
     dataset_name: str = "deepmind/pg19",
     model_pvc: str = "llm-workspace-pvc",
     data_pvc: str = "llm-data-pvc",
-    training_image_uri: str = "kjh123456/qwen-trainer:v14",
-    force_download: bool = False,
+    training_image_uri: str = "kjh123456/qwen-trainer:v16",
+    force_download: bool = True,
     subset_size: int = 1000,
     max_steps: int = 50,
 ):
-    dl_model = download_model(model_name=model_name, model_root=MOUNT_PATH_MODEL)
+    dl_model = download_model(model_name=model_name, model_root=MOUNT_PATH_MODEL, force_download=force_download)
     kubernetes.mount_pvc(dl_model, pvc_name=model_pvc, mount_path=MOUNT_PATH_MODEL)
 
     dl_data = download_dataset(dataset_name=dataset_name, data_root=MOUNT_PATH_DATA, force_download=force_download, subset_size=subset_size)

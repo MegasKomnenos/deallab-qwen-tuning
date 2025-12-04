@@ -9,7 +9,7 @@ from transformers import (
     BitsAndBytesConfig,
     default_data_collator
 )
-from trl import SFTTrainer, SFTConfig
+from trl import SFTTrainer, SFTConfig, DataCollatorForCompletionOnlyLM
 from peft import LoraConfig, prepare_model_for_kbit_training, TaskType
 
 def train():
@@ -125,14 +125,21 @@ def train():
         dataset_text_field="input_ids",
         dataset_kwargs={"skip_prepare_dataset": True}
     )
+    
+    response_template = "<|im_start|>assistant\n" 
+    
+    collator = DataCollatorForCompletionOnlyLM(
+        response_template=response_template, 
+        tokenizer=tokenizer
+    )
 
     trainer = SFTTrainer(
         model=model,
-        train_dataset=train_dataset, # <--- Passing the IterableDataset
+        train_dataset=train_dataset,
         peft_config=peft_config,
         args=training_args,
         processing_class=tokenizer,
-        data_collator=default_data_collator
+        data_collator=collator
     )
 
     print("Starting streaming training...")

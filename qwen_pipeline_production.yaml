@@ -1,12 +1,14 @@
 # PIPELINE DEFINITION
 # Name: qwen-finetune-production
-# Description: End-to-end Qwen finetuning with external Docker image for training.
 # Inputs:
 #    data_pvc: str [Default: 'llm-data-pvc']
 #    dataset_name: str [Default: 'deepmind/pg19']
+#    force_download: bool [Default: True]
+#    max_steps: int [Default: 50.0]
 #    model_name: str [Default: 'Qwen/Qwen3-4B-Thinking-2507']
 #    model_pvc: str [Default: 'llm-workspace-pvc']
-#    test_prompt: str [Default: 'Explain the internet.']
+#    subset_size: int [Default: 1000.0]
+#    training_image_uri: str [Default: 'kjh123456/qwen-trainer:v16']
 components:
   comp-download-dataset:
     executorLabel: exec-download-dataset
@@ -16,9 +18,9 @@ components:
           parameterType: STRING
         dataset_name:
           parameterType: STRING
+        force_download:
+          parameterType: BOOLEAN
         subset_size:
-          defaultValue: 2000.0
-          isOptional: true
           parameterType: NUMBER_INTEGER
     outputDefinitions:
       parameters:
@@ -28,6 +30,8 @@ components:
     executorLabel: exec-download-model
     inputDefinitions:
       parameters:
+        force_download:
+          parameterType: BOOLEAN
         model_name:
           parameterType: STRING
         model_root:
@@ -46,16 +50,12 @@ components:
           parameterType: STRING
         data_pvc:
           parameterType: STRING
-        epochs:
+        image:
+          parameterType: STRING
+        max_steps:
           defaultValue: 1.0
           isOptional: true
           parameterType: NUMBER_INTEGER
-        image:
-          parameterType: STRING
-        job_prefix:
-          defaultValue: qwen-train
-          isOptional: true
-          parameterType: STRING
         model_pvc:
           parameterType: STRING
         model_root:
@@ -73,22 +73,6 @@ components:
         base_model_path:
           parameterType: STRING
         merged_root:
-          parameterType: STRING
-    outputDefinitions:
-      parameters:
-        Output:
-          parameterType: STRING
-  comp-preprocess-dataset:
-    executorLabel: exec-preprocess-dataset
-    inputDefinitions:
-      parameters:
-        max_seq_length:
-          parameterType: NUMBER_INTEGER
-        model_path:
-          parameterType: STRING
-        processed_data_root:
-          parameterType: STRING
-        raw_data_path:
           parameterType: STRING
     outputDefinitions:
       parameters:
@@ -118,8 +102,8 @@ deploymentSpec:
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
           \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.2.0'\
           \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
-          \  python3 -m pip install --quiet --no-warn-script-location 'datasets' 'huggingface_hub'\
-          \ 'scipy' && \"$0\" \"$@\"\n"
+          \  python3 -m pip install --quiet --no-warn-script-location 'datasets==2.19.0'\
+          \ 'huggingface_hub' 'scipy' && \"$0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -131,18 +115,22 @@ deploymentSpec:
 
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef download_dataset(dataset_name: str, data_root: str, subset_size:\
-          \ int = 2000) -> str:\n    import os\n    from datasets import load_dataset,\
-          \ Dataset as HFDataset\n\n    save_path = os.path.join(data_root, \"raw\"\
-          , \"pg19_subset\")\n\n    if os.path.exists(save_path):\n        print(\"\
-          Dataset exists. Skipping.\")\n        return save_path\n\n    print(f\"\
-          Streaming {dataset_name}...\")\n    ds = load_dataset(dataset_name, split=\"\
-          train\", streaming=True)\n\n    data_list = []\n    count = 0\n    for item\
-          \ in ds:\n        if count >= subset_size: break\n        if len(item['text'])\
-          \ > 1000: # Filter short texts\n            data_list.append({\"text\":\
-          \ item['text']})\n            count += 1\n\n    final_ds = HFDataset.from_list(data_list)\n\
-          \    os.makedirs(save_path, exist_ok=True)\n    final_ds.save_to_disk(save_path)\n\
-          \    return save_path\n\n"
+          \ *\n\ndef download_dataset(\n    dataset_name: str,\n    data_root: str,\n\
+          \    force_download: bool,\n    subset_size: int\n) -> str:\n    import\
+          \ os\n    import shutil\n    from datasets import load_dataset, Dataset\
+          \ as HFDataset\n\n    save_path = os.path.join(data_root, \"raw\", \"pg19_large_cache\"\
+          )\n\n    # ... (Cache check logic remains the same) ...\n    if os.path.exists(save_path):\n\
+          \        if force_download:\n            shutil.rmtree(save_path)\n    \
+          \    else:\n            print(f\"Large cached dataset found at {save_path}.\
+          \ Skipping download.\")\n            return save_path\n\n    ds = load_dataset(\n\
+          \        dataset_name,\n        split=\"train\",\n        streaming=True,\n\
+          \        trust_remote_code=True\n    )\n\n    data_list = []\n    count\
+          \ = 0\n\n    # Download a chunk\n    for item in ds:\n        if len(item['text'])\
+          \ > 5000:\n            data_list.append({\"text\": item['text']})\n    \
+          \        count += 1\n            if count >= subset_size:\n            \
+          \    break\n\n    print(f\"Saving {count} books to disk...\")\n    final_ds\
+          \ = HFDataset.from_list(data_list)\n    os.makedirs(save_path, exist_ok=True)\n\
+          \    final_ds.save_to_disk(save_path)\n\n    return save_path\n\n"
         image: python:3.10
     exec-download-model:
       container:
@@ -171,14 +159,13 @@ deploymentSpec:
 
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef download_model(model_name: str, model_root: str) -> str:\n  \
-          \  import os\n    from huggingface_hub import snapshot_download\n\n    safe_name\
-          \ = model_name.replace(\"/\", \"--\")\n    save_path = os.path.join(model_root,\
-          \ \"base_models\", safe_name)\n\n    print(f\"Syncing model {model_name}\
-          \ to {save_path}...\")\n    snapshot_download(\n        repo_id=model_name,\n\
-          \        local_dir=save_path,\n        local_dir_use_symlinks=False, \n\
-          \        ignore_patterns=[\"*.msgpack\", \"*.h5\", \"*.ot\"]\n    )\n  \
-          \  return save_path\n\n"
+          \ *\n\ndef download_model(model_name: str, model_root: str, force_download:\
+          \ bool) -> str:\n    import os\n    from huggingface_hub import snapshot_download\n\
+          \    safe_name = model_name.replace(\"/\", \"--\")\n    save_path = os.path.join(model_root,\
+          \ \"base_models\", safe_name)\n    if os.path.exists(save_path) and force_download:\n\
+          \        shutil.rmtree(save_path)\n    snapshot_download(repo_id=model_name,\
+          \ local_dir=save_path, local_dir_use_symlinks=False)\n    return save_path\n\
+          \n"
         image: python:3.10
     exec-launch-training-job:
       container:
@@ -208,55 +195,52 @@ deploymentSpec:
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef launch_training_job(\n    base_model_path: str,\n    data_path:\
-          \ str,\n    model_root: str, # Where to save checkpoints\n    image: str,\n\
-          \    model_pvc: str,\n    data_pvc: str,\n    epochs: int = 1,\n    job_prefix:\
-          \ str = \"qwen-train\"\n) -> str:\n    import time\n    from kubernetes\
-          \ import client, config\n\n    # 1. Setup\n    config.load_incluster_config()\n\
+          \ str,\n    model_root: str,\n    image: str,\n    model_pvc: str,\n   \
+          \ data_pvc: str,\n    max_steps: int = 1\n) -> str:\n    import time\n \
+          \   from kubernetes import client, config\n\n    config.load_incluster_config()\n\
           \    api = client.CustomObjectsApi()\n\n    with open(\"/var/run/secrets/kubernetes.io/serviceaccount/namespace\"\
-          ) as f:\n        namespace = f.read().strip()\n\n    job_name = f\"{job_prefix}-{int(time.time())}\"\
-          \n    output_dir = f\"/mnt/models/checkpoints/{job_name}\" # Internal path\n\
-          \    external_output = f\"{model_root}/checkpoints/{job_name}\" # Path for\
-          \ pipeline return\n\n    # 2. Define Manifest\n    # Note: We pass arguments\
-          \ that match src/training/train.py\n    cmd_args = [\n        \"--base_model_path\"\
+          ) as f:\n        namespace = f.read().strip()\n\n    job_name = f\"qwen-finetune-{int(time.time())}\"\
+          \n    # Output dir must be inside the PVC mount\n    output_dir_internal\
+          \ = f\"/mnt/models/checkpoints/{job_name}\"\n    output_dir_external = f\"\
+          {model_root}/checkpoints/{job_name}\"\n\n    # Arguments passed strictly\
+          \ to argparse in train.py\n    cmd_args = [\n        \"--base_model_path\"\
           , base_model_path,\n        \"--data_path\", data_path,\n        \"--output_dir\"\
-          , output_dir,\n        \"--epochs\", str(epochs)\n    ]\n\n    manifest\
-          \ = {\n        \"apiVersion\": \"kubeflow.org/v1\",\n        \"kind\": \"\
-          PyTorchJob\",\n        \"metadata\": {\"name\": job_name, \"namespace\"\
-          : namespace},\n        \"spec\": {\n            \"pytorchReplicaSpecs\"\
+          , output_dir_internal,\n        \"--max_steps\", str(max_steps)\n    ]\n\
+          \n    manifest = {\n        \"apiVersion\": \"kubeflow.org/v1\",\n     \
+          \   \"kind\": \"PyTorchJob\",\n        \"metadata\": {\"name\": job_name,\
+          \ \"namespace\": namespace},\n        \"spec\": {\n            \"pytorchReplicaSpecs\"\
           : {\n                \"Master\": {\n                    \"replicas\": 1,\n\
-          \                    \"template\": {\n                        \"spec\":\
-          \ {\n                            \"containers\": [{\n                  \
+          \                    \"template\": {\n                        \"metadata\"\
+          : {\n                            \"annotations\": {\n                  \
+          \              \"sidecar.istio.io/inject\": \"false\"\n                \
+          \            }\n                        },\n                        \"spec\"\
+          : {\n                            \"containers\": [{\n                  \
           \              \"name\": \"pytorch\",\n                                \"\
-          image\": image, # Uses your pre-built image\n                          \
-          \      \"args\": cmd_args,\n                                \"resources\"\
-          : {\"limits\": {\"nvidia.com/gpu\": 1, \"memory\": \"16Gi\"}},\n       \
-          \                         \"volumeMounts\": [\n                        \
-          \            {\"name\": \"models\", \"mountPath\": \"/mnt/models\"},\n \
-          \                                   {\"name\": \"data\", \"mountPath\":\
-          \ \"/mnt/data\"},\n                                    {\"name\": \"dshm\"\
-          , \"mountPath\": \"/dev/shm\"}\n                                ]\n    \
-          \                        }],\n                            \"volumes\": [\n\
-          \                                {\"name\": \"models\", \"persistentVolumeClaim\"\
-          : {\"claimName\": model_pvc}},\n                                {\"name\"\
-          : \"data\", \"persistentVolumeClaim\": {\"claimName\": data_pvc}},\n   \
-          \                             {\"name\": \"dshm\", \"emptyDir\": {\"medium\"\
-          : \"Memory\"}}\n                            ]\n                        }\n\
-          \                    }\n                }\n            }\n        }\n  \
-          \  }\n\n    # 3. Submit\n    print(f\"Submitting PyTorchJob {job_name} using\
-          \ image {image}...\")\n    api.create_namespaced_custom_object(\"kubeflow.org\"\
-          , \"v1\", namespace, \"pytorchjobs\", manifest)\n\n    # 4. Monitor (Block\
-          \ until done)\n    while True:\n        time.sleep(30)\n        status =\
-          \ api.get_namespaced_custom_object_status(\"kubeflow.org\", \"v1\", namespace,\
-          \ \"pytorchjobs\", job_name)\n        conds = status.get(\"status\", {}).get(\"\
-          conditions\", [])\n        if conds:\n            last = conds[-1]\n   \
-          \         if last[\"type\"] == \"Succeeded\":\n                print(\"\
-          Training Succeeded.\")\n                break\n            if last[\"type\"\
-          ] == \"Failed\":\n                raise RuntimeError(f\"Training Failed:\
-          \ {last.get('message')}\")\n\n    return external_output\n\n"
+          image\": image,\n                                \"args\": cmd_args,\n \
+          \                               \"resources\": {\"limits\": {\"nvidia.com/gpu\"\
+          : 1, \"memory\": \"16Gi\"}},\n                                \"volumeMounts\"\
+          : [\n                                    {\"name\": \"models\", \"mountPath\"\
+          : \"/mnt/models\"},\n                                    {\"name\": \"data\"\
+          , \"mountPath\": \"/mnt/data\"},\n                                    {\"\
+          name\": \"dshm\", \"mountPath\": \"/dev/shm\"}\n                       \
+          \         ]\n                            }],\n                         \
+          \   \"volumes\": [\n                                {\"name\": \"models\"\
+          , \"persistentVolumeClaim\": {\"claimName\": model_pvc}},\n            \
+          \                    {\"name\": \"data\", \"persistentVolumeClaim\": {\"\
+          claimName\": data_pvc}},\n                                {\"name\": \"\
+          dshm\", \"emptyDir\": {\"medium\": \"Memory\"}}\n                      \
+          \      ]\n                        }\n                    }\n           \
+          \     }\n            }\n        }\n    }\n\n    print(f\"Submitting PyTorchJob\
+          \ {job_name}...\")\n    api.create_namespaced_custom_object(\"kubeflow.org\"\
+          , \"v1\", namespace, \"pytorchjobs\", manifest)\n\n    while True:\n   \
+          \     time.sleep(30)\n        status = api.get_namespaced_custom_object_status(\"\
+          kubeflow.org\", \"v1\", namespace, \"pytorchjobs\", job_name)\n        conds\
+          \ = status.get(\"status\", {}).get(\"conditions\", [])\n        if conds:\n\
+          \            last = conds[-1]\n            if last[\"type\"] == \"Succeeded\"\
+          :\n                break\n            if last[\"type\"] == \"Failed\":\n\
+          \                raise RuntimeError(f\"Job Failed: {last.get('message')}\"\
+          )\n\n    return output_dir_external\n\n"
         image: python:3.10
-        resources:
-          cpuLimit: 0.5
-          memoryLimit: 1.073741824
     exec-merge-adapter:
       container:
         args:
@@ -285,73 +269,29 @@ deploymentSpec:
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef merge_adapter(base_model_path: str, adapter_path: str, merged_root:\
-          \ str) -> str:\n    import torch\n    import os\n    from transformers import\
-          \ AutoModelForCausalLM, AutoTokenizer\n    from peft import PeftModel\n\n\
-          \    print(\"Loading Base Model (CPU/FP16)...\")\n    # Merging usually\
-          \ requires loading the full model in FP16 or FP32\n    model = AutoModelForCausalLM.from_pretrained(\n\
-          \        base_model_path, torch_dtype=torch.float16, device_map=\"cpu\"\
-          , trust_remote_code=True\n    )\n\n    print(f\"Loading Adapter from {adapter_path}...\"\
-          )\n    model = PeftModel.from_pretrained(model, adapter_path)\n\n    print(\"\
-          Merging...\")\n    model = model.merge_and_unload()\n\n    save_path = os.path.join(merged_root,\
-          \ \"qwen_archaic_production\")\n    model.save_pretrained(save_path)\n\n\
-          \    tokenizer = AutoTokenizer.from_pretrained(adapter_path, trust_remote_code=True)\n\
-          \    tokenizer.save_pretrained(save_path)\n\n    return save_path\n\n"
-        image: pytorch/pytorch:2.1.2-cuda12.1-cudnn8-runtime
+          \ str) -> str:\n    import torch\n    import os\n    import gc\n    from\
+          \ transformers import AutoModelForCausalLM, AutoTokenizer\n    from peft\
+          \ import PeftModel\n\n    print(f\"--- Merging Adapter ---\")\n    print(f\"\
+          Base: {base_model_path}\")\n    print(f\"Adapter: {adapter_path}\")\n\n\
+          \    # 1. Load Base Model in FP16 on CPU\n    # Why CPU? Loading a 4B/7B\
+          \ model in FP16 takes 8GB/15GB RAM. \n    # If we do this on an 11GB GPU,\
+          \ we might OOM before merging.\n    # System RAM is usually cheaper and\
+          \ larger.\n    print(\"Loading base model to System RAM (CPU)...\")\n  \
+          \  base_model = AutoModelForCausalLM.from_pretrained(\n        base_model_path,\n\
+          \        torch_dtype=torch.float16,\n        device_map=\"cpu\", # Force\
+          \ CPU\n        low_cpu_mem_usage=True,\n        trust_remote_code=True\n\
+          \    )\n\n    # 2. Load Adapter\n    print(\"Loading LoRA adapter...\")\n\
+          \    model = PeftModel.from_pretrained(base_model, adapter_path)\n\n   \
+          \ # 3. Merge\n    print(\"Merging weights...\")\n    model = model.merge_and_unload()\n\
+          \n    # 4. Save\n    save_path = os.path.join(merged_root, \"qwen_merged_final\"\
+          )\n    print(f\"Saving merged model to {save_path}...\")\n    model.save_pretrained(save_path)\n\
+          \n    # Save tokenizer\n    tokenizer = AutoTokenizer.from_pretrained(base_model_path,\
+          \ trust_remote_code=True)\n    tokenizer.save_pretrained(save_path)\n\n\
+          \    # Cleanup\n    del model\n    del base_model\n    gc.collect()\n\n\
+          \    return save_path\n\n"
+        image: pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
         resources:
           memoryLimit: 25.769803776
-    exec-preprocess-dataset:
-      container:
-        args:
-        - --executor_input
-        - '{{$}}'
-        - --function_to_execute
-        - preprocess_dataset
-        command:
-        - sh
-        - -c
-        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
-          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.2.0'\
-          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
-          \  python3 -m pip install --quiet --no-warn-script-location 'datasets' 'transformers'\
-          \ 'scipy' 'accelerate' && \"$0\" \"$@\"\n"
-        - sh
-        - -ec
-        - 'program_path=$(mktemp -d)
-
-
-          printf "%s" "$0" > "$program_path/ephemeral_component.py"
-
-          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
-
-          '
-        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef preprocess_dataset(\n    raw_data_path: str,\n    processed_data_root:\
-          \ str,\n    model_path: str,\n    max_seq_length: int\n) -> str:\n    import\
-          \ os\n    from datasets import load_from_disk\n    from transformers import\
-          \ AutoTokenizer\n\n    dataset = load_from_disk(raw_data_path)\n    tokenizer\
-          \ = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)\n\
-          \    if tokenizer.pad_token is None: tokenizer.pad_token = tokenizer.eos_token\n\
-          \n    SYSTEM_PROMPT = \"You are a scholar from the Victorian era. Write\
-          \ in an archaic, formal tone.\"\n\n    def process_batch(examples):\n  \
-          \      conversations = []\n        for text in examples['text']:\n     \
-          \       conversations.append([\n                {\"role\": \"system\", \"\
-          content\": SYSTEM_PROMPT},\n                {\"role\": \"user\", \"content\"\
-          : \"Write a passage in your natural style.\"},\n                {\"role\"\
-          : \"assistant\", \"content\": text}\n            ])\n\n        formatted_texts\
-          \ = [tokenizer.apply_chat_template(c, tokenize=False) for c in conversations]\n\
-          \n        tokenized = tokenizer(\n            formatted_texts,\n       \
-          \     truncation=True,\n            max_length=max_seq_length,\n       \
-          \     padding=\"max_length\",\n            return_overflowing_tokens=True,\n\
-          \            stride=256\n        )\n        return {\"input_ids\": tokenized[\"\
-          input_ids\"], \"attention_mask\": tokenized[\"attention_mask\"], \"labels\"\
-          : tokenized[\"input_ids\"].copy()}\n\n    processed_ds = dataset.map(process_batch,\
-          \ batched=True, remove_columns=dataset.column_names)\n    save_path = os.path.join(processed_data_root,\
-          \ \"processed_train_tokenized\")\n    processed_ds.save_to_disk(save_path)\n\
-          \    return save_path\n\n"
-        image: python:3.10
-        resources:
-          memoryLimit: 8.589934592
     exec-run-inference:
       container:
         args:
@@ -367,7 +307,7 @@ deploymentSpec:
           \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.2.0'\
           \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
           \  python3 -m pip install --quiet --no-warn-script-location 'transformers'\
-          \ 'torch' 'accelerate' && \"$0\" \"$@\"\n"
+          \ 'torch' 'accelerate' 'bitsandbytes' && \"$0\" \"$@\"\n"
         - sh
         - -ec
         - 'program_path=$(mktemp -d)
@@ -380,23 +320,31 @@ deploymentSpec:
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef run_inference(model_path: str, prompt: str):\n    import torch\n\
-          \    from transformers import AutoModelForCausalLM, AutoTokenizer\n\n  \
-          \  print(f\"Loading from {model_path}...\")\n    tokenizer = AutoTokenizer.from_pretrained(model_path,\
+          \    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig\n\
+          \n    print(f\"Loading merged model from {model_path}...\")\n\n    # Load\
+          \ in 4-bit for inference to ensure it fits comfortably in 11GB\n    # even\
+          \ with long context windows.\n    bnb_config = BitsAndBytesConfig(\n   \
+          \     load_in_4bit=True,\n        bnb_4bit_quant_type=\"nf4\",\n       \
+          \ bnb_4bit_compute_dtype=torch.float16\n    )\n\n    tokenizer = AutoTokenizer.from_pretrained(model_path,\
           \ trust_remote_code=True)\n    model = AutoModelForCausalLM.from_pretrained(\n\
-          \        model_path, torch_dtype=torch.float16, device_map=\"auto\", trust_remote_code=True\n\
-          \    )\n\n    messages = [\n        {\"role\": \"system\", \"content\":\
-          \ \"You are a scholar from the Victorian era.\"},\n        {\"role\": \"\
-          user\", \"content\": prompt}\n    ]\n    text = tokenizer.apply_chat_template(messages,\
-          \ tokenize=False, add_generation_prompt=True)\n    inputs = tokenizer(text,\
-          \ return_tensors=\"pt\").to(model.device)\n\n    outputs = model.generate(**inputs,\
-          \ max_new_tokens=150)\n    print(\"OUTPUT:\\n\" + tokenizer.decode(outputs[0],\
-          \ skip_special_tokens=True))\n\n"
-        image: pytorch/pytorch:2.1.2-cuda12.1-cudnn8-runtime
+          \        model_path,\n        quantization_config=bnb_config,\n        device_map=\"\
+          auto\",\n        trust_remote_code=True\n    )\n\n    messages = [\n   \
+          \     {\"role\": \"system\", \"content\": \"You are a scholar from the Victorian\
+          \ era. Write in an archaic, formal tone.\"},\n        {\"role\": \"user\"\
+          , \"content\": prompt}\n    ]\n\n    # Qwen chat template application\n\
+          \    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)\n\
+          \n    print(f\"Input Prompt: {text}\")\n    inputs = tokenizer(text, return_tensors=\"\
+          pt\").to(model.device)\n\n    with torch.no_grad():\n        outputs = model.generate(\n\
+          \            **inputs, \n            max_new_tokens=200,\n            do_sample=True,\n\
+          \            temperature=0.7,\n            top_p=0.9\n        )\n\n    response\
+          \ = tokenizer.decode(outputs[0], skip_special_tokens=True)\n    print(\"\
+          -\" * 30)\n    print(\"MODEL OUTPUT:\")\n    print(\"-\" * 30)\n    print(response)\n\
+          \n"
+        image: pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
         resources:
           accelerator:
             count: '1'
 pipelineInfo:
-  description: End-to-end Qwen finetuning with external Docker image for training.
   name: qwen-finetune-production
 root:
   dag:
@@ -413,6 +361,10 @@ root:
                 constant: /mnt/data
             dataset_name:
               componentInputParameter: dataset_name
+            force_download:
+              componentInputParameter: force_download
+            subset_size:
+              componentInputParameter: subset_size
         taskInfo:
           name: download-dataset
       download-model:
@@ -422,6 +374,8 @@ root:
           name: comp-download-model
         inputs:
           parameters:
+            force_download:
+              componentInputParameter: force_download
             model_name:
               componentInputParameter: model_name
             model_root:
@@ -435,8 +389,8 @@ root:
         componentRef:
           name: comp-launch-training-job
         dependentTasks:
+        - download-dataset
         - download-model
-        - preprocess-dataset
         inputs:
           parameters:
             base_model_path:
@@ -446,15 +400,13 @@ root:
             data_path:
               taskOutputParameter:
                 outputParameterKey: Output
-                producerTask: preprocess-dataset
+                producerTask: download-dataset
             data_pvc:
               componentInputParameter: data_pvc
-            epochs:
-              runtimeValue:
-                constant: 1.0
             image:
-              runtimeValue:
-                constant: kjh123456/qwen-trainer:v1
+              componentInputParameter: training_image_uri
+            max_steps:
+              componentInputParameter: max_steps
             model_pvc:
               componentInputParameter: model_pvc
             model_root:
@@ -485,32 +437,6 @@ root:
                 constant: /mnt/models
         taskInfo:
           name: merge-adapter
-      preprocess-dataset:
-        cachingOptions:
-          enableCache: true
-        componentRef:
-          name: comp-preprocess-dataset
-        dependentTasks:
-        - download-dataset
-        - download-model
-        inputs:
-          parameters:
-            max_seq_length:
-              runtimeValue:
-                constant: 2048.0
-            model_path:
-              taskOutputParameter:
-                outputParameterKey: Output
-                producerTask: download-model
-            processed_data_root:
-              runtimeValue:
-                constant: /mnt/data
-            raw_data_path:
-              taskOutputParameter:
-                outputParameterKey: Output
-                producerTask: download-dataset
-        taskInfo:
-          name: preprocess-dataset
       run-inference:
         cachingOptions:
           enableCache: true
@@ -525,7 +451,8 @@ root:
                 outputParameterKey: Output
                 producerTask: merge-adapter
             prompt:
-              componentInputParameter: test_prompt
+              runtimeValue:
+                constant: Explain the nature of electricity.
         taskInfo:
           name: run-inference
   inputDefinitions:
@@ -538,6 +465,14 @@ root:
         defaultValue: deepmind/pg19
         isOptional: true
         parameterType: STRING
+      force_download:
+        defaultValue: true
+        isOptional: true
+        parameterType: BOOLEAN
+      max_steps:
+        defaultValue: 50.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
       model_name:
         defaultValue: Qwen/Qwen3-4B-Thinking-2507
         isOptional: true
@@ -546,8 +481,12 @@ root:
         defaultValue: llm-workspace-pvc
         isOptional: true
         parameterType: STRING
-      test_prompt:
-        defaultValue: Explain the internet.
+      subset_size:
+        defaultValue: 1000.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      training_image_uri:
+        defaultValue: kjh123456/qwen-trainer:v16
         isOptional: true
         parameterType: STRING
 schemaVersion: 2.1.0
@@ -567,12 +506,6 @@ platforms:
             mountPath: /mnt/models
         exec-merge-adapter:
           pvcMount:
-          - componentInputParameter: model_pvc
-            mountPath: /mnt/models
-        exec-preprocess-dataset:
-          pvcMount:
-          - componentInputParameter: data_pvc
-            mountPath: /mnt/data
           - componentInputParameter: model_pvc
             mountPath: /mnt/models
         exec-run-inference:

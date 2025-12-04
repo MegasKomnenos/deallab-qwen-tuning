@@ -1,0 +1,137 @@
+# PIPELINE DEFINITION
+# Name: qwen-finetune-monolith
+# Inputs:
+#    data_pvc: str [Default: 'llm-data-pvc']
+#    dataset_name: str [Default: 'deepmind/pg19']
+#    force_download: bool [Default: True]
+#    max_steps: int [Default: 50.0]
+#    model_name: str [Default: 'Qwen/Qwen3-4B-Thinking-2507']
+#    model_pvc: str [Default: 'llm-workspace-pvc']
+#    subset_size: int [Default: 500.0]
+components:
+  comp-monolith-op:
+    executorLabel: exec-monolith-op
+    inputDefinitions:
+      parameters:
+        data_root:
+          parameterType: STRING
+        dataset_name:
+          parameterType: STRING
+        force_download:
+          parameterType: BOOLEAN
+        max_steps:
+          parameterType: NUMBER_INTEGER
+        model_name:
+          parameterType: STRING
+        model_root:
+          parameterType: STRING
+        subset_size:
+          parameterType: NUMBER_INTEGER
+deploymentSpec:
+  executors:
+    exec-monolith-op:
+      container:
+        args:
+        - --model_name
+        - '{{$.inputs.parameters[''model_name'']}}'
+        - --dataset_name
+        - '{{$.inputs.parameters[''dataset_name'']}}'
+        - --model_root
+        - '{{$.inputs.parameters[''model_root'']}}'
+        - --data_root
+        - '{{$.inputs.parameters[''data_root'']}}'
+        - --subset_size
+        - '{{$.inputs.parameters[''subset_size'']}}'
+        - --max_steps
+        - '{{$.inputs.parameters[''max_steps'']}}'
+        - --force_download
+        - '{{$.inputs.parameters[''force_download'']}}'
+        image: kjh123456/qwen-monolith:v1
+        resources:
+          accelerator:
+            count: '1'
+            resourceCount: '1'
+          memoryLimit: 25.769803776
+          resourceMemoryLimit: 24Gi
+pipelineInfo:
+  name: qwen-finetune-monolith
+root:
+  dag:
+    tasks:
+      monolith-op:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-monolith-op
+        inputs:
+          parameters:
+            data_root:
+              runtimeValue:
+                constant: /mnt/data
+            dataset_name:
+              componentInputParameter: dataset_name
+            force_download:
+              componentInputParameter: force_download
+            max_steps:
+              componentInputParameter: max_steps
+            model_name:
+              componentInputParameter: model_name
+            model_root:
+              runtimeValue:
+                constant: /mnt/models
+            subset_size:
+              componentInputParameter: subset_size
+        taskInfo:
+          name: monolith-op
+  inputDefinitions:
+    parameters:
+      data_pvc:
+        defaultValue: llm-data-pvc
+        isOptional: true
+        parameterType: STRING
+      dataset_name:
+        defaultValue: deepmind/pg19
+        isOptional: true
+        parameterType: STRING
+      force_download:
+        defaultValue: true
+        isOptional: true
+        parameterType: BOOLEAN
+      max_steps:
+        defaultValue: 50.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      model_name:
+        defaultValue: Qwen/Qwen3-4B-Thinking-2507
+        isOptional: true
+        parameterType: STRING
+      model_pvc:
+        defaultValue: llm-workspace-pvc
+        isOptional: true
+        parameterType: STRING
+      subset_size:
+        defaultValue: 500.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.15.2
+---
+platforms:
+  kubernetes:
+    deploymentSpec:
+      executors:
+        exec-monolith-op:
+          emptyDirMounts:
+          - medium: Memory
+            mountPath: /dev/shm
+            sizeLimit: 10Gi
+            volumeName: dshm
+          pvcMount:
+          - componentInputParameter: model_pvc
+            mountPath: /mnt/models
+            pvcNameParameter:
+              componentInputParameter: model_pvc
+          - componentInputParameter: data_pvc
+            mountPath: /mnt/data
+            pvcNameParameter:
+              componentInputParameter: data_pvc
