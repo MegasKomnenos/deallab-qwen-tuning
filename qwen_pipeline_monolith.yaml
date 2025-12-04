@@ -36,12 +36,16 @@ deploymentSpec:
         - '{{$.inputs.parameters[''max_steps'']}}'
         - --force_download
         - '{{$.inputs.parameters[''force_download'']}}'
-        image: kjh123456/qwen-monolith:v3
+        image: kjh123456/qwen-monolith:v4
         resources:
           accelerator:
             count: '1'
             resourceCount: '1'
+          cpuLimit: 4.0
+          cpuRequest: 2.0
           memoryLimit: 25.769803776
+          resourceCpuLimit: 4000m
+          resourceCpuRequest: 2000m
           resourceMemoryLimit: 24Gi
         volumeMounts:
         - mountPath: /dev/shm

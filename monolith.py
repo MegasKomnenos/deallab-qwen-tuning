@@ -71,21 +71,46 @@ def main():
     # B. Data Preparation (Streaming)
     dataset = load_dataset("arrow", data_files=f"{data_path}/*.arrow", split="train", streaming=True)
     dataset = dataset.repeat(10)
-    dataset = dataset.shuffle(seed=42, buffer_size=10000)
+    dataset = dataset.shuffle(seed=42, buffer_size=100)
+    
+    def process_batch(sample):
+        # examples is now a dictionary of lists: {'text': ["...", "..."]}
+        batch_input_ids = []
+        
+        for text in sample['text']:
+            # 1. Random Slicing (Same logic, just inside loop)
+            if len(text) > 10000:
+                max_start = len(text) - 10000
+                start = random.randint(0, max_start)
+                text = text[start : start + 10000]
+            
+            # 2. Templating
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": "Write a passage in your natural style."},
+                {"role": "assistant", "content": text}
+            ]
+            
+            # Prepare for tokenizer (do not tokenize yet to allow batching)
+            # We apply template to string, then batch tokenize
+            batch_input_ids.append(
+                tokenizer.apply_chat_template(messages, tokenize=False)
+            )
 
-    def process_on_the_fly(sample):
-        text = sample['text']
-        if len(text) > 12000:
-            start = random.randint(0, len(text) - 12000)
-            text = text[start : start + 12000]
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": "Write a passage in your natural style."},
-            {"role": "assistant", "content": text}
-        ]
-        return {"input_ids": tokenizer.apply_chat_template(messages, tokenize=True, truncation=True, max_length=2048)}
+        # 3. Batched Tokenization (The Speedup)
+        # This runs in Rust (fast)
+        tokenized = tokenizer(
+            batch_input_ids,
+            truncation=True,
+            max_length=2048,
+            padding=False, # DataCollator will pad dynamically
+            add_special_tokens=False 
+        )
+        
+        return {"input_ids": tokenized["input_ids"]}
 
-    train_dataset = dataset.map(process_on_the_fly, remove_columns=["text"])
+    # ENABLE BATCHED=TRUE
+    train_dataset = dataset.map(process_batch, batched=True, batch_size=16, remove_columns=["text"])
 
     # C. Training
     job_name = f"qwen-mono-{int(time.time())}"

@@ -64,38 +64,51 @@ def train():
 
     # B. Shuffle: Library implementation of "Wide Sampling"
     # It fills a buffer of 10k items and samples randomly from it.
-    dataset = dataset.shuffle(seed=42, buffer_size=10000)
+    dataset = dataset.shuffle(seed=42, buffer_size=100)
 
     # C. Transform: The "Shallow Slice" logic
     # We define the logic, but .map() handles the execution optimization
-    CHARS_PER_SAMPLE = 12000
+    CHARS_PER_SAMPLE = 10000
     SYSTEM_PROMPT = ""
 
-    def process_on_the_fly(sample):
-        text = sample['text']
+    def process_batch(examples):
+        # examples is now a dictionary of lists: {'text': ["...", "..."]}
+        batch_input_ids = []
         
-        # 1. Random Slicing
-        if len(text) > CHARS_PER_SAMPLE:
-            max_start = len(text) - CHARS_PER_SAMPLE
-            start = random.randint(0, max_start)
-            text = text[start : start + CHARS_PER_SAMPLE]
+        for text in examples['text']:
+            # 1. Random Slicing (Same logic, just inside loop)
+            if len(text) > CHARS_PER_SAMPLE:
+                max_start = len(text) - CHARS_PER_SAMPLE
+                start = random.randint(0, max_start)
+                text = text[start : start + CHARS_PER_SAMPLE]
             
-        # 2. Templating & Tokenizing
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": "Write a passage in your natural style."},
-            {"role": "assistant", "content": text}
-        ]
-        
-        # Return input_ids directly
-        return {
-            "input_ids": tokenizer.apply_chat_template(
-                messages, tokenize=True, truncation=True, max_length=2048
+            # 2. Templating
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": "Write a passage in your natural style."},
+                {"role": "assistant", "content": text}
+            ]
+            
+            # Prepare for tokenizer (do not tokenize yet to allow batching)
+            # We apply template to string, then batch tokenize
+            batch_input_ids.append(
+                tokenizer.apply_chat_template(messages, tokenize=False)
             )
-        }
 
-    # Apply the map. This does NOT process data yet. It only sets up the pipe.
-    train_dataset = dataset.map(process_on_the_fly, remove_columns=["text"])
+        # 3. Batched Tokenization (The Speedup)
+        # This runs in Rust (fast)
+        tokenized = tokenizer(
+            batch_input_ids,
+            truncation=True,
+            max_length=2048,
+            padding=False, # DataCollator will pad dynamically
+            add_special_tokens=False 
+        )
+        
+        return {"input_ids": tokenized["input_ids"]}
+
+    # ENABLE BATCHED=TRUE
+    train_dataset = dataset.map(process_batch, batched=True, batch_size=16, remove_columns=["text"])
 
     # ------------------------------------------------------------------
     # 3. TRAINING CONFIG

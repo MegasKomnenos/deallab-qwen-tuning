@@ -131,7 +131,10 @@ def launch_training_job(
                                 "name": "pytorch",
                                 "image": image,
                                 "args": cmd_args,
-                                "resources": {"limits": {"nvidia.com/gpu": 1, "memory": "16Gi"}},
+                                "resources": {
+                                    "limits": {"nvidia.com/gpu": 1, "memory": "16Gi", "cpu": "4"}, 
+                                    "requests": {"cpu": "2"}
+                                },
                                 "volumeMounts": [
                                     {"name": "models", "mountPath": "/mnt/models"},
                                     {"name": "data", "mountPath": "/mnt/data"},
@@ -285,7 +288,7 @@ def llm_pipeline(
     dataset_name: str = "deepmind/pg19",
     model_pvc: str = "llm-workspace-pvc",
     data_pvc: str = "llm-data-pvc",
-    training_image_uri: str = "kjh123456/qwen-trainer:v20",
+    training_image_uri: str = "kjh123456/qwen-trainer:v21",
     force_download: bool = True,
     subset_size: int = 500,
     max_steps: int = 50,

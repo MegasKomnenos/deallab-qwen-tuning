@@ -8,7 +8,7 @@
 #    model_name: str [Default: 'Qwen/Qwen3-4B-Thinking-2507']
 #    model_pvc: str [Default: 'llm-workspace-pvc']
 #    subset_size: int [Default: 500.0]
-#    training_image_uri: str [Default: 'kjh123456/qwen-trainer:v20']
+#    training_image_uri: str [Default: 'kjh123456/qwen-trainer:v21']
 components:
   comp-download-dataset:
     executorLabel: exec-download-dataset
@@ -217,23 +217,25 @@ deploymentSpec:
           : {\n                            \"containers\": [{\n                  \
           \              \"name\": \"pytorch\",\n                                \"\
           image\": image,\n                                \"args\": cmd_args,\n \
-          \                               \"resources\": {\"limits\": {\"nvidia.com/gpu\"\
-          : 1, \"memory\": \"16Gi\"}},\n                                \"volumeMounts\"\
-          : [\n                                    {\"name\": \"models\", \"mountPath\"\
-          : \"/mnt/models\"},\n                                    {\"name\": \"data\"\
-          , \"mountPath\": \"/mnt/data\"},\n                                    {\"\
-          name\": \"dshm\", \"mountPath\": \"/dev/shm\"}\n                       \
-          \         ]\n                            }],\n                         \
-          \   \"volumes\": [\n                                {\"name\": \"models\"\
-          , \"persistentVolumeClaim\": {\"claimName\": model_pvc}},\n            \
-          \                    {\"name\": \"data\", \"persistentVolumeClaim\": {\"\
-          claimName\": data_pvc}},\n                                {\"name\": \"\
-          dshm\", \"emptyDir\": {\"medium\": \"Memory\"}}\n                      \
-          \      ]\n                        }\n                    }\n           \
-          \     }\n            }\n        }\n    }\n\n    print(f\"Submitting PyTorchJob\
-          \ {job_name}...\")\n    api.create_namespaced_custom_object(\"kubeflow.org\"\
-          , \"v1\", namespace, \"pytorchjobs\", manifest)\n\n    while True:\n   \
-          \     time.sleep(30)\n        status = api.get_namespaced_custom_object_status(\"\
+          \                               \"resources\": {\n                     \
+          \               \"limits\": {\"nvidia.com/gpu\": 1, \"memory\": \"16Gi\"\
+          , \"cpu\": \"4\"}, \n                                    \"requests\": {\"\
+          cpu\": \"2\"}\n                                },\n                    \
+          \            \"volumeMounts\": [\n                                    {\"\
+          name\": \"models\", \"mountPath\": \"/mnt/models\"},\n                 \
+          \                   {\"name\": \"data\", \"mountPath\": \"/mnt/data\"},\n\
+          \                                    {\"name\": \"dshm\", \"mountPath\"\
+          : \"/dev/shm\"}\n                                ]\n                   \
+          \         }],\n                            \"volumes\": [\n            \
+          \                    {\"name\": \"models\", \"persistentVolumeClaim\": {\"\
+          claimName\": model_pvc}},\n                                {\"name\": \"\
+          data\", \"persistentVolumeClaim\": {\"claimName\": data_pvc}},\n       \
+          \                         {\"name\": \"dshm\", \"emptyDir\": {\"medium\"\
+          : \"Memory\"}}\n                            ]\n                        }\n\
+          \                    }\n                }\n            }\n        }\n  \
+          \  }\n\n    print(f\"Submitting PyTorchJob {job_name}...\")\n    api.create_namespaced_custom_object(\"\
+          kubeflow.org\", \"v1\", namespace, \"pytorchjobs\", manifest)\n\n    while\
+          \ True:\n        time.sleep(30)\n        status = api.get_namespaced_custom_object_status(\"\
           kubeflow.org\", \"v1\", namespace, \"pytorchjobs\", job_name)\n        conds\
           \ = status.get(\"status\", {}).get(\"conditions\", [])\n        if conds:\n\
           \            last = conds[-1]\n            if last[\"type\"] == \"Succeeded\"\
@@ -488,7 +490,7 @@ root:
         isOptional: true
         parameterType: NUMBER_INTEGER
       training_image_uri:
-        defaultValue: kjh123456/qwen-trainer:v20
+        defaultValue: kjh123456/qwen-trainer:v21
         isOptional: true
         parameterType: STRING
 schemaVersion: 2.1.0

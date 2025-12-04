@@ -58,7 +58,7 @@ def add_dshm_to_yaml(yaml_path, task_name):
         print("Patched successfully: Added dshm mount and volume definition.")
 
 # --- 2. CONFIGURATION ---
-MONOLITH_IMAGE = "kjh123456/qwen-monolith:v3"
+MONOLITH_IMAGE = "kjh123456/qwen-monolith:v4"
 MOUNT_PATH_MODEL = "/mnt/models"
 MOUNT_PATH_DATA = "/mnt/data"
 
@@ -113,6 +113,8 @@ def llm_pipeline_monolith(
     kubernetes.mount_pvc(monolith_task, pvc_name=data_pvc, mount_path=MOUNT_PATH_DATA)
 
     # Set Resources
+    monolith_task.set_cpu_request("2000m")
+    monolith_task.set_cpu_limit("4000m")
     monolith_task.set_gpu_limit(1)
     monolith_task.set_memory_limit("24Gi")
 
