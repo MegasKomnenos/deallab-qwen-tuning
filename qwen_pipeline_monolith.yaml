@@ -36,7 +36,7 @@ deploymentSpec:
         - '{{$.inputs.parameters[''max_steps'']}}'
         - --force_download
         - '{{$.inputs.parameters[''force_download'']}}'
-        image: kjh123456/qwen-monolith:v1
+        image: kjh123456/qwen-monolith:v2
         resources:
           accelerator:
             count: '1'
