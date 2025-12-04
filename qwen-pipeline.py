@@ -81,58 +81,89 @@ def download_dataset(
 # -------------------------------------------------------------------------
 # COMPONENT 3: PREPROCESSING
 # -------------------------------------------------------------------------
-@dsl.component(base_image=BASE_IMAGE, packages_to_install=["datasets", "transformers", "accelerate"])
+@dsl.component(
+    base_image=BASE_IMAGE, 
+    packages_to_install=["datasets", "transformers", "accelerate", "scipy"]
+)
 def preprocess_dataset(
     raw_data_path: str,
     processed_data_root: str,
     model_path: str,
+    subset_size: int,
     max_seq_length: int = 2048,
-    subset_size: int = 1
 ) -> str:
     import os
+    import random
     from datasets import load_from_disk
     from transformers import AutoTokenizer
 
     print(f"Loading raw data from {raw_data_path}")
     dataset = load_from_disk(raw_data_path)
+    
+    # 1. Shuffle books first (Randomize which books we pick)
+    print("Shuffling dataset order...")
+    dataset = dataset.shuffle(seed=42)
+    
+    # 2. Select the pool of books
     if len(dataset) > subset_size:
+        print(f"Selecting {subset_size} books for wide sampling...")
         dataset = dataset.select(range(subset_size))
+    else:
+        print(f"Using all {len(dataset)} available books.")
 
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None: tokenizer.pad_token = tokenizer.eos_token
 
     SYSTEM_PROMPT = "You are a scholar from the Victorian era. Write in an archaic, formal tone."
+    
+    # 12,000 chars is roughly 3,000 tokens (enough to fill a 2048 context window with room to spare)
+    CHARS_PER_SAMPLE = 12000 
 
     def process_batch(examples):
         conversations = []
         for text in examples['text']:
+            text_len = len(text)
+            
+            # --- THE UPDATE: Random Slicing ---
+            if text_len > CHARS_PER_SAMPLE:
+                # Calculate the last possible starting index
+                max_start_index = text_len - CHARS_PER_SAMPLE
+                # Pick a random spot in the book
+                start_index = random.randint(0, max_start_index)
+                # Slice it
+                shallow_text = text[start_index : start_index + CHARS_PER_SAMPLE]
+            else:
+                # If the book is short, take the whole thing
+                shallow_text = text
+            
             conversations.append([
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": "Write a passage in your natural style."},
-                {"role": "assistant", "content": text}
+                {"role": "assistant", "content": shallow_text}
             ])
         
-        # Apply chat template first
+        # Apply chat template
         formatted_texts = [tokenizer.apply_chat_template(c, tokenize=False) for c in conversations]
         
-        # Tokenize with packing/chunking logic
+        # Tokenize
         tokenized = tokenizer(
             formatted_texts,
             truncation=True,
             max_length=max_seq_length,
             padding="max_length",
-            return_overflowing_tokens=True,
-            stride=128
+            return_overflowing_tokens=False
         )
-        # SFTTrainer expects 'input_ids', 'attention_mask', and 'labels'
+        
         return {
             "input_ids": tokenized["input_ids"],
             "attention_mask": tokenized["attention_mask"],
-            "labels": tokenized["input_ids"].copy() # Standard causal LM masking
+            "labels": tokenized["input_ids"].copy()
         }
 
+    print("Tokenizing and randomly slicing...")
     processed_ds = dataset.map(process_batch, batched=True, remove_columns=dataset.column_names)
-    save_path = os.path.join(processed_data_root, f"processed_train_{subset_size}")
+    
+    save_path = os.path.join(processed_data_root, f"processed_train_random_{subset_size}")
     processed_ds.save_to_disk(save_path)
     return save_path
 
@@ -180,6 +211,11 @@ def launch_training_job(
                 "Master": {
                     "replicas": 1,
                     "template": {
+                        "metadata": {
+                            "annotations": {
+                                "sidecar.istio.io/inject": "false"
+                            }
+                        },
                         "spec": {
                             "containers": [{
                                 "name": "pytorch",
@@ -340,7 +376,7 @@ def llm_pipeline(
     model_pvc: str = "llm-workspace-pvc",
     data_pvc: str = "llm-data-pvc",
     subset_size: int = 1,
-    training_image_uri: str = "kjh123456/qwen-trainer:v7"
+    training_image_uri: str = "kjh123456/qwen-trainer:v10"
 ):
     dl_model = download_model(model_name=model_name, model_root=MOUNT_PATH_MODEL)
     kubernetes.mount_pvc(dl_model, pvc_name=model_pvc, mount_path=MOUNT_PATH_MODEL)

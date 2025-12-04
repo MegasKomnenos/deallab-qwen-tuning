@@ -20,7 +20,7 @@ def train():
     parser.add_argument("--base_model_path", type=str, required=True)
     parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
-    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=3)
     args = parser.parse_args()
 
     print(f"--- Starting Training Job (v9) ---")
