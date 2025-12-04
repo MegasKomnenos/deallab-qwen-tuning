@@ -42,48 +42,91 @@ def download_model(model_name: str, model_root: str) -> str:
 # -------------------------------------------------------------------------
 # COMPONENT 2: DATA INGESTION
 # -------------------------------------------------------------------------
-@dsl.component(base_image=BASE_IMAGE, packages_to_install=["datasets", "huggingface_hub", "scipy"])
-def download_dataset(dataset_name: str, data_root: str, subset_size: int = 2000) -> str:
+@dsl.component(
+    base_image=BASE_IMAGE,
+    packages_to_install=["datasets==2.19.0", "huggingface_hub", "scipy"]
+)
+def download_dataset(
+    dataset_name: str,
+    data_root: str,
+    force_download: bool,
+    # This is now a "Cap", not the training set size. 
+    # Set this high (e.g., 3000) so you have plenty of data cached on disk.
+    download_limit: int = 3000
+) -> str:
     import os
+    import shutil
     from datasets import load_dataset, Dataset as HFDataset
 
-    save_path = os.path.join(data_root, "raw", "pg19_subset")
+    # We save to "raw_pg19_large" to indicate this is the bulk cache
+    save_path = os.path.join(data_root, "raw", "pg19_large_cache")
     
     if os.path.exists(save_path):
-        print("Dataset exists. Skipping.")
-        return save_path
+        if force_download:
+            shutil.rmtree(save_path)
+        else:
+            print(f"Large cached dataset found at {save_path}. Skipping download.")
+            return save_path
 
-    print(f"Streaming {dataset_name}...")
-    ds = load_dataset(dataset_name, split="train", streaming=True)
+    print(f"Streaming {dataset_name} (Limit: {download_limit})...")
+    
+    ds = load_dataset(
+        dataset_name, 
+        split="train", 
+        streaming=True, 
+        trust_remote_code=True 
+    )
     
     data_list = []
     count = 0
+    # We download a large chunk now so we don't have to come back later
     for item in ds:
-        if count >= subset_size: break
-        if len(item['text']) > 1000: # Filter short texts
+        if count >= download_limit: break
+        if len(item['text']) > 1000: 
             data_list.append({"text": item['text']})
             count += 1
             
+    print(f"Saving {count} books to disk...")
     final_ds = HFDataset.from_list(data_list)
     os.makedirs(save_path, exist_ok=True)
     final_ds.save_to_disk(save_path)
+    
     return save_path
 
 # -------------------------------------------------------------------------
 # COMPONENT 3: PREPROCESSING (Sliding Window)
 # -------------------------------------------------------------------------
-@dsl.component(base_image=BASE_IMAGE, packages_to_install=["datasets", "transformers", "scipy", "accelerate"])
+@dsl.component(
+    base_image=BASE_IMAGE, 
+    packages_to_install=["datasets", "transformers", "scipy", "accelerate"]
+)
 def preprocess_dataset(
     raw_data_path: str,
     processed_data_root: str,
     model_path: str,
-    max_seq_length: int
+    max_seq_length: int,
+    subset_size: int = 1
 ) -> str:
     import os
     from datasets import load_from_disk
     from transformers import AutoTokenizer
 
+    print(f"Loading raw cache from {raw_data_path}...")
     dataset = load_from_disk(raw_data_path)
+    
+    # --- LOGIC MOVED HERE ---
+    total_available = len(dataset)
+    print(f"Total books available in cache: {total_available}")
+    
+    if subset_size > total_available:
+        print(f"Warning: Requested {subset_size} books, but only {total_available} exist. Using all.")
+        subset_size = total_available
+
+    print(f"Selecting top {subset_size} books for this run...")
+    # 'select' creates a lightweight view of the data without rewriting disk immediately
+    dataset = dataset.select(range(subset_size))
+    # ------------------------
+
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None: tokenizer.pad_token = tokenizer.eos_token
 
@@ -108,11 +151,19 @@ def preprocess_dataset(
             return_overflowing_tokens=True,
             stride=256
         )
-        return {"input_ids": tokenized["input_ids"], "attention_mask": tokenized["attention_mask"], "labels": tokenized["input_ids"].copy()}
+        return {
+            "input_ids": tokenized["input_ids"], 
+            "attention_mask": tokenized["attention_mask"], 
+            "labels": tokenized["input_ids"].copy()
+        }
 
+    print("Tokenizing and chunking...")
     processed_ds = dataset.map(process_batch, batched=True, remove_columns=dataset.column_names)
-    save_path = os.path.join(processed_data_root, "processed_train_tokenized")
+    
+    # Save to a unique path based on subset size to avoid collisions if you run parallel experiments
+    save_path = os.path.join(processed_data_root, f"processed_train_{subset_size}_books")
     processed_ds.save_to_disk(save_path)
+    
     return save_path
 
 # -------------------------------------------------------------------------
@@ -277,7 +328,7 @@ def llm_pipeline(
     kubernetes.mount_pvc(dl_model, pvc_name=model_pvc, mount_path=MOUNT_PATH_MODEL)
     dl_model.set_caching_options(True)
 
-    dl_data = download_dataset(dataset_name=dataset_name, data_root=MOUNT_PATH_DATA)
+    dl_data = download_dataset(dataset_name=dataset_name, data_root=MOUNT_PATH_DATA, force_download=True)
     kubernetes.mount_pvc(dl_data, pvc_name=data_pvc, mount_path=MOUNT_PATH_DATA)
     dl_data.set_caching_options(True)
 

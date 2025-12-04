@@ -4,7 +4,7 @@ import os
 import torch
 from transformers import (
     AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, 
-    TrainingArguments, set_seed
+    TrainingArguments, set_seed, Trainer, DataCollatorForLanguageModeling
 )
 from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
 from trl import SFTTrainer
@@ -59,15 +59,12 @@ def train():
         save_strategy="no"
     )
 
-    trainer = SFTTrainer(
+    trainer = Trainer(
         model=model,
         train_dataset=dataset,
-        peft_config=peft_config,
-        dataset_text_field="input_ids",
-        max_seq_length=2048,
-        tokenizer=tokenizer,
         args=training_args,
-        packing=False
+        # DataCollator ensures tensors are formatted correctly for PyTorch
+        data_collator=DataCollatorForLanguageModeling(tokenizer, mlm=False)
     )
 
     trainer.train()
