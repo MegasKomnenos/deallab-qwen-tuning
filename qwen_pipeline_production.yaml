@@ -7,7 +7,7 @@
 #    max_steps: int [Default: 50.0]
 #    model_name: str [Default: 'Qwen/Qwen3-4B-Thinking-2507']
 #    model_pvc: str [Default: 'llm-workspace-pvc']
-#    subset_size: int [Default: 1000.0]
+#    subset_size: int [Default: 500.0]
 #    training_image_uri: str [Default: 'kjh123456/qwen-trainer:v16']
 components:
   comp-download-dataset:
@@ -100,7 +100,7 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.2.0'\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.13.0'\
           \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
           \  python3 -m pip install --quiet --no-warn-script-location 'datasets==2.19.0'\
           \ 'huggingface_hub' 'scipy' && \"$0\" \"$@\"\n"
@@ -144,7 +144,7 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.2.0'\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.13.0'\
           \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
           \  python3 -m pip install --quiet --no-warn-script-location 'huggingface_hub'\
           \ && \"$0\" \"$@\"\n"
@@ -160,12 +160,12 @@ deploymentSpec:
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef download_model(model_name: str, model_root: str, force_download:\
-          \ bool) -> str:\n    import os\n    from huggingface_hub import snapshot_download\n\
-          \    safe_name = model_name.replace(\"/\", \"--\")\n    save_path = os.path.join(model_root,\
-          \ \"base_models\", safe_name)\n    if os.path.exists(save_path) and force_download:\n\
-          \        shutil.rmtree(save_path)\n    snapshot_download(repo_id=model_name,\
-          \ local_dir=save_path, local_dir_use_symlinks=False)\n    return save_path\n\
-          \n"
+          \ bool) -> str:\n    import os\n    import shutil\n    from huggingface_hub\
+          \ import snapshot_download\n    safe_name = model_name.replace(\"/\", \"\
+          --\")\n    save_path = os.path.join(model_root, \"base_models\", safe_name)\n\
+          \    if os.path.exists(save_path) and force_download:\n        shutil.rmtree(save_path)\n\
+          \    snapshot_download(repo_id=model_name, local_dir=save_path, local_dir_use_symlinks=False)\n\
+          \    return save_path\n\n"
         image: python:3.10
     exec-launch-training-job:
       container:
@@ -179,7 +179,7 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.2.0'\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.13.0'\
           \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
           \  python3 -m pip install --quiet --no-warn-script-location 'kubernetes'\
           \ && \"$0\" \"$@\"\n"
@@ -253,7 +253,7 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.2.0'\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.13.0'\
           \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
           \  python3 -m pip install --quiet --no-warn-script-location 'transformers'\
           \ 'torch' 'peft' 'accelerate' 'bitsandbytes' && \"$0\" \"$@\"\n"
@@ -292,6 +292,7 @@ deploymentSpec:
         image: pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
         resources:
           memoryLimit: 25.769803776
+          resourceMemoryLimit: 24Gi
     exec-run-inference:
       container:
         args:
@@ -304,7 +305,7 @@ deploymentSpec:
         - -c
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
-          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.2.0'\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.13.0'\
           \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
           \  python3 -m pip install --quiet --no-warn-script-location 'transformers'\
           \ 'torch' 'accelerate' 'bitsandbytes' && \"$0\" \"$@\"\n"
@@ -344,6 +345,7 @@ deploymentSpec:
         resources:
           accelerator:
             count: '1'
+            resourceCount: '1'
 pipelineInfo:
   name: qwen-finetune-production
 root:
@@ -482,7 +484,7 @@ root:
         isOptional: true
         parameterType: STRING
       subset_size:
-        defaultValue: 1000.0
+        defaultValue: 500.0
         isOptional: true
         parameterType: NUMBER_INTEGER
       training_image_uri:
@@ -490,7 +492,7 @@ root:
         isOptional: true
         parameterType: STRING
 schemaVersion: 2.1.0
-sdkVersion: kfp-2.2.0
+sdkVersion: kfp-2.13.0
 ---
 platforms:
   kubernetes:

@@ -227,7 +227,7 @@ def run_experiment(args):
     PIPELINE_DISTRIBUTED = "qwen_pipeline_production.yaml"
     PIPELINE_MONOLITHIC = "qwen_pipeline_monolithic.yaml"
 
-    params = {"max_steps": MAX_STEPS, "force_download": args.force_download}
+    params = {"max_steps": MAX_STEPS, "subset_size": 500, "force_download": args.force_download}
     # ---------------------
 
     monitor = PipelineMonitor(host=args.host, namespace=args.namespace)

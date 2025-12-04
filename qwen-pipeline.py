@@ -19,6 +19,7 @@ MOUNT_PATH_DATA = "/mnt/data"
 @dsl.component(base_image=BASE_IMAGE, packages_to_install=["huggingface_hub"])
 def download_model(model_name: str, model_root: str, force_download: bool) -> str:
     import os
+    import shutil
     from huggingface_hub import snapshot_download
     safe_name = model_name.replace("/", "--")
     save_path = os.path.join(model_root, "base_models", safe_name)
@@ -286,7 +287,7 @@ def llm_pipeline(
     data_pvc: str = "llm-data-pvc",
     training_image_uri: str = "kjh123456/qwen-trainer:v16",
     force_download: bool = True,
-    subset_size: int = 1000,
+    subset_size: int = 500,
     max_steps: int = 50,
 ):
     dl_model = download_model(model_name=model_name, model_root=MOUNT_PATH_MODEL, force_download=force_download)

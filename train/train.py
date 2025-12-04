@@ -9,7 +9,7 @@ from transformers import (
     BitsAndBytesConfig,
     default_data_collator
 )
-from trl import SFTTrainer, SFTConfig, DataCollatorForCompletionOnlyLM
+from trl import SFTTrainer, SFTConfig, DataCollatorForLanguageModeling
 from peft import LoraConfig, prepare_model_for_kbit_training, TaskType
 
 def train():
@@ -128,7 +128,7 @@ def train():
     
     response_template = "<|im_start|>assistant\n" 
     
-    collator = DataCollatorForCompletionOnlyLM(
+    collator = DataCollatorForLanguageModeling(
         response_template=response_template, 
         tokenizer=tokenizer
     )

@@ -1,13 +1,3 @@
-# PIPELINE DEFINITION
-# Name: qwen-finetune-monolith
-# Inputs:
-#    data_pvc: str [Default: 'llm-data-pvc']
-#    dataset_name: str [Default: 'deepmind/pg19']
-#    force_download: bool [Default: True]
-#    max_steps: int [Default: 50.0]
-#    model_name: str [Default: 'Qwen/Qwen3-4B-Thinking-2507']
-#    model_pvc: str [Default: 'llm-workspace-pvc']
-#    subset_size: int [Default: 500.0]
 components:
   comp-monolith-op:
     executorLabel: exec-monolith-op
@@ -53,6 +43,14 @@ deploymentSpec:
             resourceCount: '1'
           memoryLimit: 25.769803776
           resourceMemoryLimit: 24Gi
+        volumeMounts:
+        - mountPath: /dev/shm
+          name: dshm
+      volumes:
+      - emptyDir:
+          medium: Memory
+          sizeLimit: 10Gi
+        name: dshm
 pipelineInfo:
   name: qwen-finetune-monolith
 root:
@@ -114,24 +112,15 @@ root:
         isOptional: true
         parameterType: NUMBER_INTEGER
 schemaVersion: 2.1.0
-sdkVersion: kfp-2.15.2
+sdkVersion: kfp-2.13.0
 ---
 platforms:
   kubernetes:
     deploymentSpec:
       executors:
         exec-monolith-op:
-          emptyDirMounts:
-          - medium: Memory
-            mountPath: /dev/shm
-            sizeLimit: 10Gi
-            volumeName: dshm
           pvcMount:
           - componentInputParameter: model_pvc
             mountPath: /mnt/models
-            pvcNameParameter:
-              componentInputParameter: model_pvc
           - componentInputParameter: data_pvc
             mountPath: /mnt/data
-            pvcNameParameter:
-              componentInputParameter: data_pvc
