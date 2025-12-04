@@ -9,3 +9,4 @@ scipy
 tensorboard
 protobuf
 sentencepiece
+huggingface_hub

@@ -27,7 +27,6 @@ def download_model(model_name: str, model_root: str) -> str:
 
 @dsl.component(
     base_image=BASE_IMAGE,
-    # STRICTLY pin datasets to 2.19.0 to allow legacy script execution for pg19
     packages_to_install=["datasets==2.19.0", "huggingface_hub", "scipy"] 
 )
 def download_dataset(
@@ -37,9 +36,8 @@ def download_dataset(
 ) -> str:
     import os
     import shutil
-    from datasets import load_dataset, Dataset as HFDataset
+    from datasets import load_dataset
 
-    # We save to "raw_pg19_large" to indicate this is the bulk cache
     save_path = os.path.join(data_root, "raw", "pg19_large_cache")
     
     # Check if cache exists
@@ -50,26 +48,29 @@ def download_dataset(
             print(f"Large cached dataset found at {save_path}. Skipping download.")
             return save_path
     
-    # trust_remote_code=True is REQUIRED for pg19 because it uses a python loading script
+    print("Starting optimized download...")
+    
+    # OPTIMIZATION 1: streaming=False
+    # This downloads the pre-processed Arrow files. This is much faster
+    # than iterating row-by-row over the network.
     ds = load_dataset(
         dataset_name, 
         split="train", 
-        streaming=True, 
+        streaming=False,  # Changed to False
         trust_remote_code=True 
     )
     
-    data_list = []
-    count = 0
-    # Download a chunk
-    for item in ds:
-        if len(item['text']) > 5000: 
-            data_list.append({"text": item['text']})
-            count += 1
-            
-    print(f"Saving {count} books to disk...")
-    final_ds = HFDataset.from_list(data_list)
+    print(f"Dataset loaded. Original size: {len(ds)} books.")
+
+    # OPTIMIZATION 2: Native .filter()
+    # This uses multi-processing and is done in Arrow (C++ backend) rather than Python.
+    # It is significantly faster than a for loop.
+    ds_filtered = ds.filter(lambda example: len(example['text']) > 5000)
+    
+    print(f"Filtering complete. Saving {len(ds_filtered)} books to disk...")
+    
     os.makedirs(save_path, exist_ok=True)
-    final_ds.save_to_disk(save_path)
+    ds_filtered.save_to_disk(save_path)
     
     return save_path
 
