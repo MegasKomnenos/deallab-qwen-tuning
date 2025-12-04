@@ -59,8 +59,6 @@ def train():
         split="train", 
         streaming=True
     )
-    
-    dataset = dataset.repeat()
 
     # B. Shuffle: Library implementation of "Wide Sampling"
     # It fills a buffer of 10k items and samples randomly from it.
