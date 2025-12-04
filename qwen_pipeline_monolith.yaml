@@ -36,6 +36,9 @@ deploymentSpec:
         - '{{$.inputs.parameters[''max_steps'']}}'
         - --force_download
         - '{{$.inputs.parameters[''force_download'']}}'
+        command:
+        - python
+        - monolith.py
         image: kjh123456/qwen-monolith:v4
         resources:
           accelerator:

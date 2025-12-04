@@ -75,6 +75,7 @@ def monolith_op(
 ):
     return dsl.ContainerSpec(
         image=MONOLITH_IMAGE,
+        command=["python", "monolith.py"],
         args=[
             "--model_name", model_name,
             "--dataset_name", dataset_name,
