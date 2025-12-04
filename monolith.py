@@ -9,7 +9,7 @@ import time
 from datasets import load_dataset, Dataset as HFDataset
 from huggingface_hub import snapshot_download
 from transformers import (
-    AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, default_data_collator
+    AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, DataCollatorForLanguageModeling
 )
 from trl import SFTTrainer, SFTConfig
 from peft import LoraConfig, prepare_model_for_kbit_training, TaskType, PeftModel
@@ -70,6 +70,7 @@ def main():
 
     # B. Data Preparation (Streaming)
     dataset = load_dataset("arrow", data_files=f"{data_path}/*.arrow", split="train", streaming=True)
+    dataset = dataset.repeat(10)
     dataset = dataset.shuffle(seed=42, buffer_size=10000)
 
     def process_on_the_fly(sample):
@@ -95,8 +96,15 @@ def main():
         learning_rate=2e-4, fp16=True, logging_steps=50, optim="paged_adamw_32bit",
         remove_unused_columns=False, max_length=2048, dataset_text_field="input_ids", dataset_kwargs={"skip_prepare_dataset": True}
     )
+    
+    response_template = "<|im_start|>assistant\n" 
+    
+    collator = DataCollatorForLanguageModeling(
+        response_template=response_template, 
+        tokenizer=tokenizer
+    )
 
-    trainer = SFTTrainer(model=model, train_dataset=train_dataset, peft_config=peft_config, args=training_args, tokenizer=tokenizer, data_collator=default_data_collator)
+    trainer = SFTTrainer(model=model, train_dataset=train_dataset, peft_config=peft_config, args=training_args, tokenizer=tokenizer, data_collator=response_template)
     trainer.train()
     trainer.model.save_pretrained(output_dir)
 
