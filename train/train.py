@@ -51,8 +51,6 @@ def train():
 
     print(f"Streaming data from {args.data_path}...")
     
-    dataset = dataset.repeat(10)
-    
     # A. Load: We point to the Arrow files directly to enable native streaming
     # This works even if the data was saved via save_to_disk
     dataset = load_dataset(
@@ -61,6 +59,8 @@ def train():
         split="train", 
         streaming=True
     )
+    
+    dataset = dataset.repeat(10)
 
     # B. Shuffle: Library implementation of "Wide Sampling"
     # It fills a buffer of 10k items and samples randomly from it.
