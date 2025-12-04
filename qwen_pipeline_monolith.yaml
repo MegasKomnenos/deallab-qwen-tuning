@@ -7,8 +7,6 @@ components:
           parameterType: STRING
         dataset_name:
           parameterType: STRING
-        force_download:
-          parameterType: BOOLEAN
         max_steps:
           parameterType: NUMBER_INTEGER
         model_name:
@@ -34,8 +32,6 @@ deploymentSpec:
         - '{{$.inputs.parameters[''subset_size'']}}'
         - --max_steps
         - '{{$.inputs.parameters[''max_steps'']}}'
-        - --force_download
-        - '{{$.inputs.parameters[''force_download'']}}'
         command:
         - python
         - monolith.py
@@ -75,8 +71,6 @@ root:
                 constant: /mnt/data
             dataset_name:
               componentInputParameter: dataset_name
-            force_download:
-              componentInputParameter: force_download
             max_steps:
               componentInputParameter: max_steps
             model_name:
@@ -98,10 +92,6 @@ root:
         defaultValue: deepmind/pg19
         isOptional: true
         parameterType: STRING
-      force_download:
-        defaultValue: true
-        isOptional: true
-        parameterType: BOOLEAN
       max_steps:
         defaultValue: 50.0
         isOptional: true

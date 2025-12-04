@@ -24,11 +24,7 @@ def main():
     parser.add_argument("--data_root", type=str, required=True)
     parser.add_argument("--subset_size", type=int, default=500)
     parser.add_argument("--max_steps", type=int, default=50)
-    parser.add_argument("--force_download", type=str, default="True")
     args = parser.parse_args()
-    
-    if isinstance(args.force_download, str):
-        args.force_download = args.force_download.lower() == "True"
 
     start_time = time.time()
 
@@ -36,7 +32,7 @@ def main():
     print("\n--- STEP 1: Downloading Model ---")
     safe_name = args.model_name.replace("/", "--")
     base_model_path = os.path.join(args.model_root, "base_models", safe_name)
-    if not os.path.exists(base_model_path) or args.force_download:
+    if not os.path.exists(base_model_path) or True:
         if os.path.exists(base_model_path): shutil.rmtree(base_model_path)
         os.makedirs(os.path.dirname(base_model_path), exist_ok=True)
         snapshot_download(repo_id=args.model_name, local_dir=base_model_path, local_dir_use_symlinks=False)
@@ -44,7 +40,7 @@ def main():
     # 2. DOWNLOAD DATASET (Limited)
     print(f"\n--- STEP 2: Preparing Dataset (Limited to {subset_size} books) ---")
     data_path = os.path.join(args.data_root, "raw", "pg19_large_cache")
-    if not os.path.exists(data_path) or args.force_download:
+    if not os.path.exists(data_path) or True:
         if os.path.exists(data_path): shutil.rmtree(data_path)
         ds = load_dataset(args.dataset_name, split="train", streaming=True, trust_remote_code=True)
         data_list = []

@@ -69,7 +69,6 @@ def monolith_op(
     dataset_name: str,
     subset_size: int,
     max_steps: int,
-    force_download: bool,
     model_root: str,
     data_root: str,
 ):
@@ -82,8 +81,7 @@ def monolith_op(
             "--model_root", model_root,
             "--data_root", data_root,
             "--subset_size", subset_size,
-            "--max_steps", max_steps,
-            "--force_download", str(force_download)
+            "--max_steps", max_steps
         ]
     )
 
@@ -94,7 +92,6 @@ def llm_pipeline_monolith(
     dataset_name: str = "deepmind/pg19",
     model_pvc: str = "llm-workspace-pvc",
     data_pvc: str = "llm-data-pvc",
-    force_download: bool = True,
     subset_size: int = 500,
     max_steps: int = 50,
 ):
@@ -104,7 +101,6 @@ def llm_pipeline_monolith(
         dataset_name=dataset_name,
         subset_size=subset_size,
         max_steps=max_steps,
-        force_download=force_download,
         model_root=MOUNT_PATH_MODEL,
         data_root=MOUNT_PATH_DATA
     )
