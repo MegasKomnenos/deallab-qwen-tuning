@@ -281,7 +281,7 @@ def llm_pipeline(
     dataset_name: str = "deepmind/pg19",
     model_pvc: str = "llm-workspace-pvc",
     data_pvc: str = "llm-data-pvc",
-    training_image_uri: str = "kjh123456/qwen-trainer:v11"
+    training_image_uri: str = "kjh123456/qwen-trainer:v11",
     max_steps: int = 50,
 ):
     dl_model = download_model(model_name=model_name, model_root=MOUNT_PATH_MODEL)
