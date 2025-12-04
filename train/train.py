@@ -7,9 +7,9 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    default_data_collator
+    DataCollatorForLanguageModeling
 )
-from trl import SFTTrainer, SFTConfig, DataCollatorForLanguageModeling
+from trl import SFTTrainer, SFTConfig
 from peft import LoraConfig, prepare_model_for_kbit_training, TaskType
 
 def train():
