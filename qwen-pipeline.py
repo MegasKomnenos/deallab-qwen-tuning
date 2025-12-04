@@ -32,46 +32,46 @@ def download_model(model_name: str, model_root: str) -> str:
 def download_dataset(
     dataset_name: str,
     data_root: str,
-    force_download: bool = False,
+    force_download: bool,
+    subset_size: int
 ) -> str:
     import os
     import shutil
-    from datasets import load_dataset
+    from datasets import load_dataset, Dataset as HFDataset
 
     save_path = os.path.join(data_root, "raw", "pg19_large_cache")
-    
-    # Check if cache exists
+
+    # ... (Cache check logic remains the same) ...
     if os.path.exists(save_path):
         if force_download:
             shutil.rmtree(save_path)
         else:
             print(f"Large cached dataset found at {save_path}. Skipping download.")
             return save_path
-    
-    print("Starting optimized download...")
-    
-    # OPTIMIZATION 1: streaming=False
-    # This downloads the pre-processed Arrow files. This is much faster
-    # than iterating row-by-row over the network.
-    ds = load_dataset(
-        dataset_name, 
-        split="train", 
-        streaming=False,  # Changed to False
-        trust_remote_code=True 
-    )
-    
-    print(f"Dataset loaded. Original size: {len(ds)} books.")
 
-    # OPTIMIZATION 2: Native .filter()
-    # This uses multi-processing and is done in Arrow (C++ backend) rather than Python.
-    # It is significantly faster than a for loop.
-    ds_filtered = ds.filter(lambda example: len(example['text']) > 5000)
-    
-    print(f"Filtering complete. Saving {len(ds_filtered)} books to disk...")
-    
+    ds = load_dataset(
+        dataset_name,
+        split="train",
+        streaming=True,
+        trust_remote_code=True
+    )
+
+    data_list = []
+    count = 0
+
+    # Download a chunk
+    for item in ds:
+        if len(item['text']) > 5000:
+            data_list.append({"text": item['text']})
+            count += 1
+            if count >= subset_size:
+                break
+
+    print(f"Saving {count} books to disk...")
+    final_ds = HFDataset.from_list(data_list)
     os.makedirs(save_path, exist_ok=True)
-    ds_filtered.save_to_disk(save_path)
-    
+    final_ds.save_to_disk(save_path)
+
     return save_path
 
 # -------------------------------------------------------------------------
@@ -282,14 +282,15 @@ def llm_pipeline(
     dataset_name: str = "deepmind/pg19",
     model_pvc: str = "llm-workspace-pvc",
     data_pvc: str = "llm-data-pvc",
-    training_image_uri: str = "kjh123456/qwen-trainer:v13",
+    training_image_uri: str = "kjh123456/qwen-trainer:v14",
     force_download: bool = False,
+    subset_size: int = 1000,
     max_steps: int = 50,
 ):
     dl_model = download_model(model_name=model_name, model_root=MOUNT_PATH_MODEL)
     kubernetes.mount_pvc(dl_model, pvc_name=model_pvc, mount_path=MOUNT_PATH_MODEL)
 
-    dl_data = download_dataset(dataset_name=dataset_name, data_root=MOUNT_PATH_DATA, force_download=force_download)
+    dl_data = download_dataset(dataset_name=dataset_name, data_root=MOUNT_PATH_DATA, force_download=force_download, subset_size=subset_size)
     kubernetes.mount_pvc(dl_data, pvc_name=data_pvc, mount_path=MOUNT_PATH_DATA)
 
     train_job = launch_training_job(
