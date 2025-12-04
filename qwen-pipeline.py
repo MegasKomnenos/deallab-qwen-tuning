@@ -34,7 +34,6 @@ def download_dataset(
     dataset_name: str,
     data_root: str,
     force_download: bool = False,
-    download_limit: int = 3000
 ) -> str:
     import os
     import shutil
@@ -50,8 +49,6 @@ def download_dataset(
         else:
             print(f"Large cached dataset found at {save_path}. Skipping download.")
             return save_path
-
-    print(f"Streaming {dataset_name} (Limit: {download_limit})...")
     
     # trust_remote_code=True is REQUIRED for pg19 because it uses a python loading script
     ds = load_dataset(
@@ -65,9 +62,7 @@ def download_dataset(
     count = 0
     # Download a chunk
     for item in ds:
-        if count >= download_limit: break
-        # Filter very short texts
-        if len(item['text']) > 1000: 
+        if len(item['text']) > 5000: 
             data_list.append({"text": item['text']})
             count += 1
             
@@ -76,95 +71,6 @@ def download_dataset(
     os.makedirs(save_path, exist_ok=True)
     final_ds.save_to_disk(save_path)
     
-    return save_path
-
-# -------------------------------------------------------------------------
-# COMPONENT 3: PREPROCESSING
-# -------------------------------------------------------------------------
-@dsl.component(
-    base_image=BASE_IMAGE, 
-    packages_to_install=["datasets", "transformers", "accelerate", "scipy"]
-)
-def preprocess_dataset(
-    raw_data_path: str,
-    processed_data_root: str,
-    model_path: str,
-    subset_size: int,
-    max_seq_length: int = 2048,
-) -> str:
-    import os
-    import random
-    from datasets import load_from_disk
-    from transformers import AutoTokenizer
-
-    print(f"Loading raw data from {raw_data_path}")
-    dataset = load_from_disk(raw_data_path)
-    
-    # 1. Shuffle books first (Randomize which books we pick)
-    print("Shuffling dataset order...")
-    dataset = dataset.shuffle(seed=42)
-    
-    # 2. Select the pool of books
-    if len(dataset) > subset_size:
-        print(f"Selecting {subset_size} books for wide sampling...")
-        dataset = dataset.select(range(subset_size))
-    else:
-        print(f"Using all {len(dataset)} available books.")
-
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-    if tokenizer.pad_token is None: tokenizer.pad_token = tokenizer.eos_token
-
-    SYSTEM_PROMPT = "You are a scholar from the Victorian era. Write in an archaic, formal tone."
-    
-    # 12,000 chars is roughly 3,000 tokens (enough to fill a 2048 context window with room to spare)
-    CHARS_PER_SAMPLE = 12000 
-
-    def process_batch(examples):
-        conversations = []
-        for text in examples['text']:
-            text_len = len(text)
-            
-            # --- THE UPDATE: Random Slicing ---
-            if text_len > CHARS_PER_SAMPLE:
-                # Calculate the last possible starting index
-                max_start_index = text_len - CHARS_PER_SAMPLE
-                # Pick a random spot in the book
-                start_index = random.randint(0, max_start_index)
-                # Slice it
-                shallow_text = text[start_index : start_index + CHARS_PER_SAMPLE]
-            else:
-                # If the book is short, take the whole thing
-                shallow_text = text
-            
-            conversations.append([
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": "Write a passage in your natural style."},
-                {"role": "assistant", "content": shallow_text}
-            ])
-        
-        # Apply chat template
-        formatted_texts = [tokenizer.apply_chat_template(c, tokenize=False) for c in conversations]
-        
-        # Tokenize
-        tokenized = tokenizer(
-            formatted_texts,
-            truncation=True,
-            max_length=max_seq_length,
-            padding="max_length",
-            return_overflowing_tokens=False
-        )
-        
-        return {
-            "input_ids": tokenized["input_ids"],
-            "attention_mask": tokenized["attention_mask"],
-            "labels": tokenized["input_ids"].copy()
-        }
-
-    print("Tokenizing and randomly slicing...")
-    processed_ds = dataset.map(process_batch, batched=True, remove_columns=dataset.column_names)
-    
-    save_path = os.path.join(processed_data_root, f"processed_train_random_{subset_size}")
-    processed_ds.save_to_disk(save_path)
     return save_path
 
 # -------------------------------------------------------------------------
@@ -178,7 +84,7 @@ def launch_training_job(
     image: str,
     model_pvc: str,
     data_pvc: str,
-    epochs: int = 1
+    max_steps: int = 1
 ) -> str:
     import time
     from kubernetes import client, config
@@ -199,7 +105,7 @@ def launch_training_job(
         "--base_model_path", base_model_path,
         "--data_path", data_path,
         "--output_dir", output_dir_internal,
-        "--epochs", str(epochs)
+        "--max_steps", str(max_steps)
     ]
 
     manifest = {
@@ -375,8 +281,8 @@ def llm_pipeline(
     dataset_name: str = "deepmind/pg19",
     model_pvc: str = "llm-workspace-pvc",
     data_pvc: str = "llm-data-pvc",
-    subset_size: int = 1,
-    training_image_uri: str = "kjh123456/qwen-trainer:v10"
+    training_image_uri: str = "kjh123456/qwen-trainer:v11"
+    max_steps: int = 50,
 ):
     dl_model = download_model(model_name=model_name, model_root=MOUNT_PATH_MODEL)
     kubernetes.mount_pvc(dl_model, pvc_name=model_pvc, mount_path=MOUNT_PATH_MODEL)
@@ -384,23 +290,15 @@ def llm_pipeline(
     dl_data = download_dataset(dataset_name=dataset_name, data_root=MOUNT_PATH_DATA)
     kubernetes.mount_pvc(dl_data, pvc_name=data_pvc, mount_path=MOUNT_PATH_DATA)
 
-    preprocess = preprocess_dataset(
-        raw_data_path=dl_data.output,
-        processed_data_root=MOUNT_PATH_DATA,
-        model_path=dl_model.output,
-        subset_size=subset_size
-    )
-    kubernetes.mount_pvc(preprocess, pvc_name=data_pvc, mount_path=MOUNT_PATH_DATA)
-    kubernetes.mount_pvc(preprocess, pvc_name=model_pvc, mount_path=MOUNT_PATH_MODEL)
-
     train_job = launch_training_job(
         base_model_path=dl_model.output,
-        data_path=preprocess.output,
+        data_path=dl_data.output,
         model_root=MOUNT_PATH_MODEL,
         image=training_image_uri,
         model_pvc=model_pvc,
-        data_pvc=data_pvc
-    ).after(preprocess)
+        data_pvc=data_pvc,
+        max_steps=max_steps
+    ).after(dl_data)
 
     merge = merge_adapter(
         base_model_path=dl_model.output,
