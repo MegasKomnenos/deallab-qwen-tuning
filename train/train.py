@@ -51,6 +51,8 @@ def train():
 
     print(f"Streaming data from {args.data_path}...")
     
+    dataset = dataset.repeat(10)
+    
     # A. Load: We point to the Arrow files directly to enable native streaming
     # This works even if the data was saved via save_to_disk
     dataset = load_dataset(

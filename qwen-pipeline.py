@@ -281,13 +281,14 @@ def llm_pipeline(
     dataset_name: str = "deepmind/pg19",
     model_pvc: str = "llm-workspace-pvc",
     data_pvc: str = "llm-data-pvc",
-    training_image_uri: str = "kjh123456/qwen-trainer:v12",
+    training_image_uri: str = "kjh123456/qwen-trainer:v13",
+    force_download: bool = False,
     max_steps: int = 50,
 ):
     dl_model = download_model(model_name=model_name, model_root=MOUNT_PATH_MODEL)
     kubernetes.mount_pvc(dl_model, pvc_name=model_pvc, mount_path=MOUNT_PATH_MODEL)
 
-    dl_data = download_dataset(dataset_name=dataset_name, data_root=MOUNT_PATH_DATA)
+    dl_data = download_dataset(dataset_name=dataset_name, data_root=MOUNT_PATH_DATA, force_download=force_download)
     kubernetes.mount_pvc(dl_data, pvc_name=data_pvc, mount_path=MOUNT_PATH_DATA)
 
     train_job = launch_training_job(
