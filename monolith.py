@@ -38,7 +38,7 @@ def main():
         snapshot_download(repo_id=args.model_name, local_dir=base_model_path, local_dir_use_symlinks=False)
 
     # 2. DOWNLOAD DATASET (Limited)
-    print(f"\n--- STEP 2: Preparing Dataset (Limited to {subset_size} books) ---")
+    print(f"\n--- STEP 2: Preparing Dataset (Limited to {args.subset_size} books) ---")
     data_path = os.path.join(args.data_root, "raw", "pg19_large_cache")
     if not os.path.exists(data_path) or True:
         if os.path.exists(data_path): shutil.rmtree(data_path)
@@ -49,7 +49,7 @@ def main():
             if len(item['text']) > 5000:
                 data_list.append({"text": item['text']})
                 count += 1
-                if count >= subset_size: break
+                if count >= args.subset_size: break
         final_ds = HFDataset.from_list(data_list)
         final_ds.save_to_disk(data_path)
 

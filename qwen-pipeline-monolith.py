@@ -58,7 +58,7 @@ def add_dshm_to_yaml(yaml_path, task_name):
         print("Patched successfully: Added dshm mount and volume definition.")
 
 # --- 2. CONFIGURATION ---
-MONOLITH_IMAGE = "kjh123456/qwen-monolith:v6"
+MONOLITH_IMAGE = "kjh123456/qwen-monolith:v7"
 MOUNT_PATH_MODEL = "/mnt/models"
 MOUNT_PATH_DATA = "/mnt/data"
 
