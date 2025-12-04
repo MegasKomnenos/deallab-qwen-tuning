@@ -5,7 +5,8 @@ from datasets import load_from_disk
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    BitsAndBytesConfig
+    BitsAndBytesConfig,
+    default_data_collator 
 )
 from trl import SFTTrainer, SFTConfig
 from peft import (
@@ -16,18 +17,24 @@ from peft import (
 
 def train():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--base_model_path", type=str, required=True, help="Path to base model in PVC")
-    parser.add_argument("--data_path", type=str, required=True, help="Path to pre-processed dataset in PVC")
-    parser.add_argument("--output_dir", type=str, required=True, help="Path to save checkpoints")
+    parser.add_argument("--base_model_path", type=str, required=True)
+    parser.add_argument("--data_path", type=str, required=True)
+    parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--epochs", type=int, default=1)
     args = parser.parse_args()
 
-    print(f"--- Starting Training Job ---")
-    print(f"Base Model: {args.base_model_path}")
-    print(f"Data: {args.data_path}")
-    print(f"Output: {args.output_dir}")
+    print(f"--- Starting Training Job (v9) ---")
+    
+    # 1. Load Data
+    print(f"Loading pre-tokenized dataset from {args.data_path}...")
+    dataset = load_from_disk(args.data_path)
 
-    # --- VRAM Optimization: 4-bit Loading ---
+    # 2. Load Tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(args.base_model_path, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    # 3. Model Setup (4-bit QLoRA)
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -35,7 +42,6 @@ def train():
         bnb_4bit_use_double_quant=True,
     )
 
-    print("Loading model with quantization...")
     model = AutoModelForCausalLM.from_pretrained(
         args.base_model_path,
         quantization_config=bnb_config,
@@ -45,7 +51,7 @@ def train():
     model.gradient_checkpointing_enable()
     model = prepare_model_for_kbit_training(model)
 
-    # --- LoRA Config ---
+    # 4. LoRA Config
     peft_config = LoraConfig(
         r=16,
         lora_alpha=32,
@@ -55,14 +61,8 @@ def train():
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
 
-    print(f"Loading pre-tokenized dataset from {args.data_path}...")
-    dataset = load_from_disk(args.data_path)
-    
-    tokenizer = AutoTokenizer.from_pretrained(args.base_model_path, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    # --- Training Arguments (SFTConfig) ---
+    # 5. SFTConfig (The New Standard)
+    # We consolidate ALL training arguments here.
     training_args = SFTConfig(
         output_dir=args.output_dir,
         num_train_epochs=args.epochs,
@@ -79,24 +79,29 @@ def train():
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
         report_to="tensorboard",
-        remove_unused_columns=False,
+        remove_unused_columns=False, # Critical for pre-tokenized data
         
-        # --- FIXED: Use 'max_length' instead of 'max_seq_length' ---
-        max_length=2048,
-        packing=False,
+        # TRL SPECIFIC ARGS (New API Locations)
+        max_length=2048,           # Was max_seq_length
+        packing=False,             # Moved to Config
         dataset_text_field="input_ids",
         dataset_kwargs={
-            "skip_prepare_dataset": True # Critical since we pre-tokenized
+            "skip_prepare_dataset": True # Tells SFTTrainer: "Don't touch my data, it's ready"
         }
     )
 
     print("Initializing SFTTrainer...")
+    
+    # 6. Trainer Initialization
     trainer = SFTTrainer(
         model=model,
         train_dataset=dataset,
         peft_config=peft_config,
-        tokenizer=tokenizer,
-        args=training_args
+        args=training_args,
+        # API CHANGE FIX: 'tokenizer' is renamed to 'processing_class' in latest versions
+        processing_class=tokenizer, 
+        # Since we pre-padded in preprocessing, use default collator to simply stack tensors
+        data_collator=default_data_collator 
     )
 
     print("Starting training...")
