@@ -340,7 +340,7 @@ def llm_pipeline(
     model_pvc: str = "llm-workspace-pvc",
     data_pvc: str = "llm-data-pvc",
     subset_size: int = 1,
-    training_image_uri: str = "kjh123456/qwen-trainer:v6"
+    training_image_uri: str = "kjh123456/qwen-trainer:v7"
 ):
     dl_model = download_model(model_name=model_name, model_root=MOUNT_PATH_MODEL)
     kubernetes.mount_pvc(dl_model, pvc_name=model_pvc, mount_path=MOUNT_PATH_MODEL)

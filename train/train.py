@@ -7,7 +7,6 @@ from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig
 )
-# UPDATED IMPORTS: SFTConfig is now required
 from trl import SFTTrainer, SFTConfig
 from peft import (
     LoraConfig,
@@ -63,8 +62,7 @@ def train():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # --- Training Arguments (Now SFTConfig) ---
-    # SFTConfig inherits from TrainingArguments, so we use it for everything.
+    # --- Training Arguments (SFTConfig) ---
     training_args = SFTConfig(
         output_dir=args.output_dir,
         num_train_epochs=args.epochs,
@@ -83,12 +81,12 @@ def train():
         report_to="tensorboard",
         remove_unused_columns=False,
         
-        # --- MOVED ARGS (Required for new TRL versions) ---
-        max_seq_length=2048,
+        # --- FIXED: Use 'max_length' instead of 'max_seq_length' ---
+        max_length=2048,
         packing=False,
-        dataset_text_field="input_ids", # Technically ignored if input_ids exist, but good practice
+        dataset_text_field="input_ids",
         dataset_kwargs={
-            "skip_prepare_dataset": True # Tells SFTTrainer: "Trust me, I already tokenized it"
+            "skip_prepare_dataset": True # Critical since we pre-tokenized
         }
     )
 
@@ -99,7 +97,6 @@ def train():
         peft_config=peft_config,
         tokenizer=tokenizer,
         args=training_args
-        # NOTE: max_seq_length and packing are REMOVED from here
     )
 
     print("Starting training...")
