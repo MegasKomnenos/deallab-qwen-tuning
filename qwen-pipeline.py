@@ -8,9 +8,9 @@ from kfp.dsl import Input, Output, Artifact, Model, Dataset, Metrics
 # -------------------------------------------------------------------------
 BASE_IMAGE = "python:3.10"
 # Image used for Merge/Inference (Needs torch/transformers)
-WORKER_IMAGE = "pytorch/pytorch:2.1.2-cuda12.1-cudnn8-runtime"
+WORKER_IMAGE = "pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime"
 # Your Custom Training Image (Built from the Dockerfile above)
-TRAINING_IMAGE_URI = "kjh123456/qwen-trainer:v3" 
+TRAINING_IMAGE_URI = "kjh123456/qwen-trainer:v4" 
 
 MOUNT_PATH_MODEL = "/mnt/models"
 MOUNT_PATH_DATA = "/mnt/data"
@@ -27,24 +27,57 @@ def download_model(model_name: str, model_root: str) -> str:
     snapshot_download(repo_id=model_name, local_dir=save_path, local_dir_use_symlinks=False)
     return save_path
 
-@dsl.component(base_image=BASE_IMAGE, packages_to_install=["datasets", "huggingface_hub"])
-def download_dataset(dataset_name: str, data_root: str, download_limit: int = 3000) -> str:
+@dsl.component(
+    base_image=BASE_IMAGE,
+    # STRICTLY pin datasets to 2.19.0 to allow legacy script execution for pg19
+    packages_to_install=["datasets==2.19.0", "huggingface_hub", "scipy"] 
+)
+def download_dataset(
+    dataset_name: str,
+    data_root: str,
+    force_download: bool = False,
+    download_limit: int = 3000
+) -> str:
     import os
+    import shutil
     from datasets import load_dataset, Dataset as HFDataset
-    save_path = os.path.join(data_root, "raw", "pg19_cache")
-    if os.path.exists(save_path): return save_path
+
+    # We save to "raw_pg19_large" to indicate this is the bulk cache
+    save_path = os.path.join(data_root, "raw", "pg19_large_cache")
     
-    ds = load_dataset(dataset_name, split="train", streaming=True, trust_remote_code=True)
+    # Check if cache exists
+    if os.path.exists(save_path):
+        if force_download:
+            shutil.rmtree(save_path)
+        else:
+            print(f"Large cached dataset found at {save_path}. Skipping download.")
+            return save_path
+
+    print(f"Streaming {dataset_name} (Limit: {download_limit})...")
+    
+    # trust_remote_code=True is REQUIRED for pg19 because it uses a python loading script
+    ds = load_dataset(
+        dataset_name, 
+        split="train", 
+        streaming=True, 
+        trust_remote_code=True 
+    )
+    
     data_list = []
     count = 0
+    # Download a chunk
     for item in ds:
         if count >= download_limit: break
-        if len(item['text']) > 1000:
+        # Filter very short texts
+        if len(item['text']) > 1000: 
             data_list.append({"text": item['text']})
             count += 1
-    
+            
+    print(f"Saving {count} books to disk...")
     final_ds = HFDataset.from_list(data_list)
+    os.makedirs(save_path, exist_ok=True)
     final_ds.save_to_disk(save_path)
+    
     return save_path
 
 # -------------------------------------------------------------------------
@@ -304,7 +337,7 @@ def run_inference(model_path: str, prompt: str):
 # -------------------------------------------------------------------------
 @dsl.pipeline(name="qwen-finetune-production")
 def llm_pipeline(
-    model_name: str = "Qwen/Qwen2-7B-Instruct", # Example model
+    model_name: str = "Qwen/Qwen3-4B-Thinking-2507", # Example model
     dataset_name: str = "deepmind/pg19",
     model_pvc: str = "llm-workspace-pvc",
     data_pvc: str = "llm-data-pvc"
