@@ -9,8 +9,6 @@ from kfp.dsl import Input, Output, Artifact, Model, Dataset, Metrics
 BASE_IMAGE = "python:3.10"
 # Image used for Merge/Inference (Needs torch/transformers)
 WORKER_IMAGE = "pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime"
-# Your Custom Training Image (Built from the Dockerfile above)
-TRAINING_IMAGE_URI = "kjh123456/qwen-trainer:v4" 
 
 MOUNT_PATH_MODEL = "/mnt/models"
 MOUNT_PATH_DATA = "/mnt/data"
@@ -89,7 +87,7 @@ def preprocess_dataset(
     processed_data_root: str,
     model_path: str,
     max_seq_length: int = 2048,
-    subset_size: int = 100
+    subset_size: int = 1
 ) -> str:
     import os
     from datasets import load_from_disk
@@ -340,7 +338,9 @@ def llm_pipeline(
     model_name: str = "Qwen/Qwen3-4B-Thinking-2507", # Example model
     dataset_name: str = "deepmind/pg19",
     model_pvc: str = "llm-workspace-pvc",
-    data_pvc: str = "llm-data-pvc"
+    data_pvc: str = "llm-data-pvc",
+    subset_size: int = 1,
+    training_image_uri: str = "kjh123456/qwen-trainer:v6"
 ):
     dl_model = download_model(model_name=model_name, model_root=MOUNT_PATH_MODEL)
     kubernetes.mount_pvc(dl_model, pvc_name=model_pvc, mount_path=MOUNT_PATH_MODEL)
@@ -351,7 +351,8 @@ def llm_pipeline(
     preprocess = preprocess_dataset(
         raw_data_path=dl_data.output,
         processed_data_root=MOUNT_PATH_DATA,
-        model_path=dl_model.output
+        model_path=dl_model.output,
+        subset_size=subset_size
     )
     kubernetes.mount_pvc(preprocess, pvc_name=data_pvc, mount_path=MOUNT_PATH_DATA)
     kubernetes.mount_pvc(preprocess, pvc_name=model_pvc, mount_path=MOUNT_PATH_MODEL)
@@ -360,7 +361,7 @@ def llm_pipeline(
         base_model_path=dl_model.output,
         data_path=preprocess.output,
         model_root=MOUNT_PATH_MODEL,
-        image=TRAINING_IMAGE_URI,
+        image=training_image_uri,
         model_pvc=model_pvc,
         data_pvc=data_pvc
     ).after(preprocess)

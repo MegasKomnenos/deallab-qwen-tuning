@@ -104,7 +104,7 @@ def train():
         fp16=True,                          # Use Mixed Precision
         logging_steps=10,
         save_strategy="epoch",              # Save only at end of epoch to save disk space
-        evaluation_strategy="no",           # Skip eval for pure training runs
+        eval_strategy="no",           # Skip eval for pure training runs
         optim="paged_adamw_32bit",          # Paged Optimizer: offloads to CPU RAM if GPU fills up
         max_grad_norm=0.3,                  # Gradient clipping
         warmup_ratio=0.03,
