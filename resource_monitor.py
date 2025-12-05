@@ -48,21 +48,33 @@ class PipelineMonitor:
 
         try:
             # --- AUTHENTICATION FIX ---
-            # Inject the user identity header for Multi-User Kubeflow
-            # We try multiple methods to ensure compatibility with different KFP SDK versions
             self.kfp_client = kfp.Client(host=host)
             
             if userid:
-                # Method 1: For standard KFP clients
+                logging.info(f"Attempting to inject user identity: {userid}")
+                injected = False
+                
+                # 1. Standard KFP v1 approach
                 if hasattr(self.kfp_client, 'api_client') and hasattr(self.kfp_client.api_client, 'default_headers'):
                     self.kfp_client.api_client.default_headers["kubeflow-userid"] = userid
-                    logging.info(f"Injected 'kubeflow-userid' header: {userid}")
+                    injected = True
+                    logging.info("Method 1: Injected header into self.kfp_client.api_client.default_headers")
+
+                # 2. Internal client approach (KFP v2 sometimes hides it here)
+                if hasattr(self.kfp_client, '_api_client') and hasattr(self.kfp_client._api_client, 'default_headers'):
+                    self.kfp_client._api_client.default_headers["kubeflow-userid"] = userid
+                    injected = True
+                    logging.info("Method 2: Injected header into self.kfp_client._api_client.default_headers")
+
+                # 3. Requests Session (fallback for raw HTTP calls)
+                if hasattr(self.kfp_client, '_session') and hasattr(self.kfp_client._session, 'headers'):
+                    self.kfp_client._session.headers["kubeflow-userid"] = userid
+                    injected = True
+                    logging.info("Method 3: Injected header into self.kfp_client._session.headers")
                 
-                # Method 2: For other variations/sessions
-                # Some versions require setting it on the session headers directly
-                # (This is a safety net)
-                if hasattr(self.kfp_client, '_session'):
-                    self.kfp_client._session.headers.update({"kubeflow-userid": userid})
+                if not injected:
+                    logging.warning("WARNING: COULD NOT FIND PLACE TO INJECT USERID HEADER! Authentication may fail.")
+                    logging.info(f"Debug: Client dir: {dir(self.kfp_client)}")
 
             self.namespace = namespace
             logging.info(f"KFP Client initialized. Monitoring namespace: {self.namespace}")
