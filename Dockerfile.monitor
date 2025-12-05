@@ -14,7 +14,7 @@ COPY resource_monitor.py .
 # You can uncomment the lines below if you want to bake them into the image,
 # otherwise, you must ensure they are mounted or generated in the working dir.
 COPY qwen_pipeline_production.yaml .
-COPY qwen_pipeline_monolithic.yaml .
+COPY qwen_pipeline_monolith.yaml .
 
 # Set the entrypoint to run the script
 ENTRYPOINT ["python", "resource_monitor.py"]
