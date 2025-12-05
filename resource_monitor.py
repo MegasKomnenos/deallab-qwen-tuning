@@ -34,15 +34,36 @@ def parse_quantity(quantity):
         return 0
 
 class PipelineMonitor:
-    def __init__(self, host=None, namespace="default"):
+    def __init__(self, host=None, namespace="default", userid=None):
         try:
-            config.load_kube_config() # Load local kubeconfig
+            # Try loading in-cluster config first, then fall back to local
+            try:
+                config.load_incluster_config()
+            except config.ConfigException:
+                config.load_kube_config()
+            
             self.core_v1 = client.CoreV1Api()
         except Exception as e:
             logging.error(f"Could not configure Kubernetes client: {e}"); exit(1)
 
         try:
+            # --- AUTHENTICATION FIX ---
+            # Inject the user identity header for Multi-User Kubeflow
+            # We try multiple methods to ensure compatibility with different KFP SDK versions
             self.kfp_client = kfp.Client(host=host)
+            
+            if userid:
+                # Method 1: For standard KFP clients
+                if hasattr(self.kfp_client, 'api_client') and hasattr(self.kfp_client.api_client, 'default_headers'):
+                    self.kfp_client.api_client.default_headers["kubeflow-userid"] = userid
+                    logging.info(f"Injected 'kubeflow-userid' header: {userid}")
+                
+                # Method 2: For other variations/sessions
+                # Some versions require setting it on the session headers directly
+                # (This is a safety net)
+                if hasattr(self.kfp_client, '_session'):
+                    self.kfp_client._session.headers.update({"kubeflow-userid": userid})
+
             self.namespace = namespace
             logging.info(f"KFP Client initialized. Monitoring namespace: {self.namespace}")
         except Exception as e:
@@ -230,7 +251,7 @@ def run_experiment(args):
     params = {"max_steps": MAX_STEPS, "subset_size": 500, "force_download": args.force_download}
     # ---------------------
 
-    monitor = PipelineMonitor(host=args.host, namespace=args.namespace)
+    monitor = PipelineMonitor(host=args.host, namespace=args.namespace, userid=args.userid)
     all_results = []
 
     # Compile Pipelines (Ensure Python files are present and compiled YAMLs exist)
@@ -281,6 +302,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Launch KFP pipelines and monitor resource allocation.")
     parser.add_argument("--host", type=str, default=None, help="KFP API host (e.g., http://localhost:8080/pipeline). Optional if using proxy.")
     parser.add_argument("--namespace", type=str, required=True, help="The Kubernetes namespace (e.g., kubeflow-user).")
+    parser.add_argument("--userid", type=str, required=False, help="The user identity (email) for auth (e.g., user@example.com).")
     parser.add_argument("--max_steps", type=int, default=1500, help="Number of training steps (Tuned for <2h execution).")
     parser.add_argument("--force_download", action="store_true", help="Force re-download of model and data.")
     parser.add_argument("--skip_distributed", action="store_true", help="Skip the distributed pipeline run.")
