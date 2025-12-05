@@ -9,7 +9,7 @@ import re
 import logging
 import os
 import sys
-import urllib.request # Added for sidecar termination
+import urllib.request 
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -46,18 +46,15 @@ def kill_istio_sidecar():
         with urllib.request.urlopen(req) as response:
             logging.info(f"Istio Sidecar termination request sent. Response: {response.read().decode('utf-8')}")
     except Exception:
-        # This is normal if Istio is not injected or not running on this port
         pass
 
 class PipelineMonitor:
-    def __init__(self, host=None, namespace="default"):
+    def __init__(self, host=None, namespace="default", userid=None):
         # 1. Kubernetes Client Setup
         try:
-            # When running in a pod, this loads the ServiceAccount token mounted at /var/run/secrets/...
             config.load_incluster_config()
             logging.info("Loaded in-cluster Kubernetes configuration.")
         except config.ConfigException:
-            # Fallback for local testing
             try:
                 config.load_kube_config()
                 logging.info("Loaded local kubeconfig.")
@@ -67,14 +64,24 @@ class PipelineMonitor:
         self.core_v1 = client.CoreV1Api()
 
         # 2. KFP Client Setup
-        # If no host is provided, we assume we are inside the cluster and try the internal DNS.
         if not host:
-            # Common internal service DNS for Kubeflow Pipelines
             host = "http://ml-pipeline.kubeflow.svc.cluster.local:8888"
             logging.info(f"No host provided. Defaulting to internal service: {host}")
 
         try:
             self.kfp_client = kfp.Client(host=host)
+            
+            # --- AUTH FIX: Inject UserID Header ---
+            if userid:
+                logging.info(f"Injecting auth header for user: {userid}")
+                if hasattr(self.kfp_client, 'api_client') and hasattr(self.kfp_client.api_client, 'default_headers'):
+                    self.kfp_client.api_client.default_headers["kubeflow-userid"] = userid
+                elif hasattr(self.kfp_client, '_api_client') and hasattr(self.kfp_client._api_client, 'default_headers'):
+                     self.kfp_client._api_client.default_headers["kubeflow-userid"] = userid
+                
+                if hasattr(self.kfp_client, '_session'):
+                    self.kfp_client._session.headers.update({"kubeflow-userid": userid})
+
             self.namespace = namespace
             logging.info(f"KFP Client initialized. Monitoring namespace: {self.namespace}")
         except Exception as e:
@@ -153,27 +160,17 @@ class PipelineMonitor:
                 current_data['end_time'] = self._get_pod_end_time(pod)
 
     def _account_for_pytorchjob(self, pod_data):
-        # Find the KFP launcher pod for the PyTorchJob
         launcher_pods = [data for name, data in pod_data.items() if 'launch-training-job' in name]
-
         if not launcher_pods:
             return
 
         for launcher in launcher_pods:
-            # If the launcher pod finished, we assume the PyTorchJob ran.
-            # Since the workers might not inherit KFP labels, we manually account for their resources
-            # using the duration of the launcher pod as a proxy for the worker duration.
-
             if launcher['status'] == 'Succeeded' and launcher['start_time'] and launcher['end_time']:
                 logging.info(f"Applying heuristic: Accounting for PyTorchJob resources launched by {launcher['pod_name']}...")
-
-                # Known resources requested by the PyTorchJob definition (from qwen-pipeline.py)
                 PTJ_GPU = 1
                 PTJ_MEM_BYTES = 16 * (1024**3) # 16Gi
-                # CPU is often defaulted by K8s if not specified, assuming 2 core
                 PTJ_CPU = 2
 
-                # Create a synthetic entry for the worker
                 worker_name = f"{launcher['pod_name']}-ptj-worker-synthetic"
                 pod_data[worker_name] = {
                     'pod_name': worker_name,
@@ -186,12 +183,10 @@ class PipelineMonitor:
                 }
 
     def _get_pod_end_time(self, pod):
-        # Find the termination time of the 'main' container
         if pod.status.container_statuses:
             for cs in pod.status.container_statuses:
                 if cs.name == 'main' and cs.state.terminated:
                     return cs.state.terminated.finished_at
-        # Fallback if 'main' container isn't found or finished yet
         return datetime.now(timezone.utc)
 
     def _extract_pod_info(self, pod):
@@ -199,13 +194,11 @@ class PipelineMonitor:
         memory_request_bytes = 0
         gpu_request = 0
 
-        # Sum requests of all containers (main + sidecars/init)
         for container in pod.spec.containers:
             if container.resources:
                 requests = container.resources.requests or {}
                 cpu_request += parse_quantity(requests.get('cpu'))
                 memory_request_bytes += parse_quantity(requests.get('memory'))
-                # GPUs are typically specified in limits
                 limits = container.resources.limits or {}
                 gpu_request += parse_quantity(limits.get('nvidia.com/gpu'))
 
@@ -228,8 +221,6 @@ class PipelineMonitor:
             end_time = data['end_time']
 
             if not start_time or not end_time:
-                if data['status'] not in ['Pending', 'ContainerCreating']:
-                     logging.warning(f"Skipping pod {data['pod_name']} due to missing timing info. Status: {data['status']}")
                 continue
 
             duration_hours = (end_time - start_time).total_seconds() / 3600.0
@@ -252,7 +243,6 @@ class PipelineMonitor:
         return pd.DataFrame(results)
 
 def run_experiment(args):
-    # --- Configuration ---
     EXPERIMENT_NAME = "Qwen_Resource_Comparison_Experiment"
     MAX_STEPS = args.max_steps
 
@@ -260,23 +250,17 @@ def run_experiment(args):
     PIPELINE_MONOLITHIC = "qwen_pipeline_monolith.yaml"
 
     params = {"max_steps": MAX_STEPS, "subset_size": 500, "force_download": args.force_download}
-    # ---------------------
-
-    monitor = PipelineMonitor(host=args.host, namespace=args.namespace)
+    monitor = PipelineMonitor(host=args.host, namespace=args.namespace, userid=args.userid)
     all_results = []
 
-    # Compile Pipelines (Ensure Python files are present and compiled YAMLs exist)
     logging.info("Checking for compiled pipelines...")
     try:
-        # We rely on the user having compiled the pipelines beforehand using the provided definitions
         if not os.path.exists(PIPELINE_DISTRIBUTED) or not os.path.exists(PIPELINE_MONOLITHIC):
             logging.error("Error: Pipeline YAML files not found. Please run the pipeline Python scripts first.")
-            # exit(1)
+            # We don't exit here so we can see the full logs, but the next steps will fail
     except Exception as e:
         logging.error(f"An error occurred during pre-check: {e}")
 
-
-    # Run Distributed Pipeline
     if not args.skip_distributed:
         run_name_dist = f"Distributed-{MAX_STEPS}steps-{int(time.time())}"
         try:
@@ -285,11 +269,9 @@ def run_experiment(args):
             if not df_dist.empty:
                 df_dist['Pipeline Type'] = 'Distributed'
                 all_results.append(df_dist)
-                df_dist.to_csv(f"results_{run_name_dist}.csv", index=False)
         except Exception as e:
             logging.error(f"Error during distributed pipeline execution: {e}")
 
-    # Run Monolithic Pipeline
     if not args.skip_monolithic:
         run_name_mono = f"Monolithic-{MAX_STEPS}steps-{int(time.time())}"
         try:
@@ -298,34 +280,27 @@ def run_experiment(args):
             if not df_mono.empty:
                 df_mono['Pipeline Type'] = 'Monolithic'
                 all_results.append(df_mono)
-                df_mono.to_csv(f"results_{run_name_mono}.csv", index=False)
         except Exception as e:
             logging.error(f"Error during monolithic pipeline execution: {e}")
 
     if all_results:
         df_final = pd.concat(all_results)
-        
-        # Output to CSV for persistence if volume is mounted
-        try:
-            df_final.to_csv("comparison_results_all.csv", index=False)
-        except Exception as e:
-            logging.warning(f"Could not save CSV to disk: {e}")
-            
-        logging.info(f"\n--- Experiment Finished. Results: ---")
-        # Print to STDOUT so it appears in 'kubectl logs'
         print(df_final.to_string(index=False))
-        
-        kill_istio_sidecar() # <--- TERMINATE SIDECAR HERE
+        kill_istio_sidecar() 
         return df_final
     
-    kill_istio_sidecar() # Ensure we kill it even if no results
+    kill_istio_sidecar()
     return None
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Launch KFP pipelines and monitor resource allocation.")
     parser.add_argument("--host", type=str, default=None, help="KFP API host. Defaults to internal DNS if not set.")
     parser.add_argument("--namespace", type=str, required=True, help="The Kubernetes namespace (e.g., kubeflow-user).")
-    parser.add_argument("--max_steps", type=int, default=1500, help="Number of training steps (Tuned for <2h execution).")
+    
+    # --- THIS LINE MUST BE PRESENT ---
+    parser.add_argument("--userid", type=str, required=False, help="The user identity (email) for auth.")
+    
+    parser.add_argument("--max_steps", type=int, default=1500, help="Number of training steps.")
     parser.add_argument("--force_download", action="store_true", help="Force re-download of model and data.")
     parser.add_argument("--skip_distributed", action="store_true", help="Skip the distributed pipeline run.")
     parser.add_argument("--skip_monolithic", action="store_true", help="Skip the monolithic pipeline run.")

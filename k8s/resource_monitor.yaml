@@ -12,7 +12,6 @@ spec:
       serviceAccountName: default-editor
       containers:
       - name: monitor
-        # REPLACE THIS with your updated image tag (e.g., v3)
         image: kjh123456/kfp-monitor:latest
         imagePullPolicy: IfNotPresent
         command: ["python", "resource_monitor.py"]
