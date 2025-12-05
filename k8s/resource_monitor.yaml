@@ -14,7 +14,7 @@ spec:
       - name: monitor
         # REPLACE with your actual image registry path
         # If using local Kind/Minikube, you might use just "kfp-monitor:latest" with imagePullPolicy: Never
-        image: kjh123456/kfp-monitor:v1
+        image: kjh123456/kfp-monitor:v2
         imagePullPolicy: IfNotPresent
         command: ["python", "resource_monitor.py"]
         args:
