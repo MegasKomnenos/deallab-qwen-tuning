@@ -19,7 +19,7 @@ SYSTEM_PROMPT = ""
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-4B-Thinking-2507")
-    parser.add_argument("--dataset_name", type=str, default="pleisto/pg19")
+    parser.add_argument("--dataset_name", type=str, default="emozilla/pg19")
     parser.add_argument("--model_root", type=str, required=True)
     parser.add_argument("--data_root", type=str, required=True)
     parser.add_argument("--subset_size", type=int, default=500)
@@ -42,7 +42,7 @@ def main():
     data_path = os.path.join(args.data_root, "raw", "pg19_large_cache")
     if not os.path.exists(data_path) or True:
         if os.path.exists(data_path): shutil.rmtree(data_path)
-        ds = load_dataset(args.dataset_name, split="train", streaming=True, trust_remote_code=True)
+        ds = load_dataset(args.dataset_name, split="train", streaming=True)
         data_list = []
         count = 0
         for item in ds:

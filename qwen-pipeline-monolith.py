@@ -58,7 +58,7 @@ def add_dshm_to_yaml(yaml_path, task_name):
         print("Patched successfully: Added dshm mount and volume definition.")
 
 # --- 2. CONFIGURATION ---
-MONOLITH_IMAGE = "kjh123456/qwen-monolith:v8"
+MONOLITH_IMAGE = "kjh123456/qwen-monolith:v9"
 MOUNT_PATH_MODEL = "/mnt/models"
 MOUNT_PATH_DATA = "/mnt/data"
 
@@ -89,7 +89,7 @@ def monolith_op(
 @dsl.pipeline(name="qwen-finetune-monolith")
 def llm_pipeline_monolith(
     model_name: str = "Qwen/Qwen3-4B-Thinking-2507",
-    dataset_name: str = "pleisto/pg19",
+    dataset_name: str = "emozilla/pg19",
     model_pvc: str = "llm-workspace-pvc",
     data_pvc: str = "llm-data-pvc",
     subset_size: int = 500,

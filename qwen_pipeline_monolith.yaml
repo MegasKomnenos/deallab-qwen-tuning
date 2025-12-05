@@ -35,7 +35,7 @@ deploymentSpec:
         command:
         - python
         - monolith.py
-        image: kjh123456/qwen-monolith:v8
+        image: kjh123456/qwen-monolith:v9
         resources:
           accelerator:
             count: '1'
@@ -89,7 +89,7 @@ root:
         isOptional: true
         parameterType: STRING
       dataset_name:
-        defaultValue: pleisto/pg19
+        defaultValue: emozilla/pg19
         isOptional: true
         parameterType: STRING
       max_steps:
