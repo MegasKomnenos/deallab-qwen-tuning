@@ -12,7 +12,7 @@ spec:
       serviceAccountName: default-editor
       containers:
       - name: monitor
-        image: kjh123456/kfp-monitor:v5
+        image: kjh123456/kfp-monitor:v6
         imagePullPolicy: IfNotPresent
         command: ["python", "resource_monitor.py"]
         args:
