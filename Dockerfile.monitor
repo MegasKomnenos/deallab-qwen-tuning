@@ -1,0 +1,20 @@
+# Use a lightweight Python base image
+FROM python:3.9-slim
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Install dependencies
+# We include --no-cache-dir to keep the image size small
+RUN pip install --no-cache-dir -r kfp pandas kubernetes
+# Copy the script into the container
+COPY resource_monitor.py .
+
+# NOTE: Your script expects pipeline YAML files to exist.
+# You can uncomment the lines below if you want to bake them into the image,
+# otherwise, you must ensure they are mounted or generated in the working dir.
+COPY qwen_pipeline_production.yaml .
+COPY qwen_pipeline_monolithic.yaml .
+
+# Set the entrypoint to run the script
+ENTRYPOINT ["python", "resource_monitor.py"]
