@@ -21,11 +21,16 @@ def download_model(model_name: str, model_root: str, force_download: bool) -> st
     import os
     import shutil
     from huggingface_hub import snapshot_download
+    import time
+    start_time = time.time()
     safe_name = model_name.replace("/", "--")
     save_path = os.path.join(model_root, "base_models", safe_name)
     if os.path.exists(save_path) and force_download:
         shutil.rmtree(save_path)
     snapshot_download(repo_id=model_name, local_dir=save_path, local_dir_use_symlinks=False)
+    
+    print(f"\n--- Finished in {(time.time() - start_time)/60:.2f} minutes ---")
+    
     return save_path
 
 @dsl.component(
@@ -41,7 +46,9 @@ def download_dataset(
     import os
     import shutil
     from datasets import load_dataset, Dataset as HFDataset
-
+    import time
+    start_time = time.time()
+    
     save_path = os.path.join(data_root, "raw", "pg19_large_cache")
 
     # ... (Cache check logic remains the same) ...
@@ -74,6 +81,8 @@ def download_dataset(
     final_ds = HFDataset.from_list(data_list)
     os.makedirs(save_path, exist_ok=True)
     final_ds.save_to_disk(save_path)
+    
+    print(f"\n--- Finished in {(time.time() - start_time)/60:.2f} minutes ---")
 
     return save_path
 
@@ -92,7 +101,9 @@ def launch_training_job(
 ) -> str:
     import time
     from kubernetes import client, config
-
+    import time
+    start_time = time.time()
+    
     config.load_incluster_config()
     api = client.CustomObjectsApi()
     
@@ -166,6 +177,8 @@ def launch_training_job(
                 break
             if last["type"] == "Failed":
                 raise RuntimeError(f"Job Failed: {last.get('message')}")
+                
+    print(f"\n--- Finished in {(time.time() - start_time)/60:.2f} minutes ---")
 
     return output_dir_external
 
@@ -182,7 +195,9 @@ def merge_adapter(base_model_path: str, adapter_path: str, merged_root: str) -> 
     import gc
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel
-
+    import time
+    start_time = time.time()
+    
     print(f"--- Merging Adapter ---")
     print(f"Base: {base_model_path}")
     print(f"Adapter: {adapter_path}")
@@ -222,6 +237,8 @@ def merge_adapter(base_model_path: str, adapter_path: str, merged_root: str) -> 
     del base_model
     gc.collect()
     
+    print(f"\n--- Finished in {(time.time() - start_time)/60:.2f} minutes ---")
+    
     return save_path
 
 # -------------------------------------------------------------------------
@@ -234,7 +251,8 @@ def merge_adapter(base_model_path: str, adapter_path: str, merged_root: str) -> 
 def run_inference(model_path: str, prompt: str):
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-
+    import time
+    start_time = time.time()
     print(f"Loading merged model from {model_path}...")
 
     # Load in 4-bit for inference to ensure it fits comfortably in 11GB
@@ -278,6 +296,8 @@ def run_inference(model_path: str, prompt: str):
     print("MODEL OUTPUT:")
     print("-" * 30)
     print(response)
+    
+    print(f"\n--- Finished in {(time.time() - start_time)/60:.2f} minutes ---")
 
 # -------------------------------------------------------------------------
 # PIPELINE
