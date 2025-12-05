@@ -19,7 +19,7 @@ SYSTEM_PROMPT = ""
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-4B-Thinking-2507")
-    parser.add_argument("--dataset_name", type=str, default="deepmind/pg19")
+    parser.add_argument("--dataset_name", type=str, default="pleisto/pg19")
     parser.add_argument("--model_root", type=str, required=True)
     parser.add_argument("--data_root", type=str, required=True)
     parser.add_argument("--subset_size", type=int, default=500)
