@@ -118,8 +118,9 @@ deploymentSpec:
           \ *\n\ndef download_dataset(\n    dataset_name: str,\n    data_root: str,\n\
           \    force_download: bool,\n    subset_size: int\n) -> str:\n    import\
           \ os\n    import shutil\n    from datasets import load_dataset, Dataset\
-          \ as HFDataset\n\n    save_path = os.path.join(data_root, \"raw\", \"pg19_large_cache\"\
-          )\n\n    # ... (Cache check logic remains the same) ...\n    if os.path.exists(save_path):\n\
+          \ as HFDataset\n    import time\n    start_time = time.time()\n\n    save_path\
+          \ = os.path.join(data_root, \"raw\", \"pg19_large_cache\")\n\n    # ...\
+          \ (Cache check logic remains the same) ...\n    if os.path.exists(save_path):\n\
           \        if force_download:\n            shutil.rmtree(save_path)\n    \
           \    else:\n            print(f\"Large cached dataset found at {save_path}.\
           \ Skipping download.\")\n            return save_path\n\n    ds = load_dataset(\n\
@@ -130,7 +131,9 @@ deploymentSpec:
           \        count += 1\n            if count >= subset_size:\n            \
           \    break\n\n    print(f\"Saving {count} books to disk...\")\n    final_ds\
           \ = HFDataset.from_list(data_list)\n    os.makedirs(save_path, exist_ok=True)\n\
-          \    final_ds.save_to_disk(save_path)\n\n    return save_path\n\n"
+          \    final_ds.save_to_disk(save_path)\n\n    print(f\"\\n--- Finished in\
+          \ {(time.time() - start_time)/60:.2f} minutes ---\")\n\n    return save_path\n\
+          \n"
         image: python:3.10
     exec-download-model:
       container:
@@ -161,10 +164,12 @@ deploymentSpec:
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef download_model(model_name: str, model_root: str, force_download:\
           \ bool) -> str:\n    import os\n    import shutil\n    from huggingface_hub\
-          \ import snapshot_download\n    safe_name = model_name.replace(\"/\", \"\
-          --\")\n    save_path = os.path.join(model_root, \"base_models\", safe_name)\n\
-          \    if os.path.exists(save_path) and force_download:\n        shutil.rmtree(save_path)\n\
-          \    snapshot_download(repo_id=model_name, local_dir=save_path, local_dir_use_symlinks=False)\n\
+          \ import snapshot_download\n    import time\n    start_time = time.time()\n\
+          \    safe_name = model_name.replace(\"/\", \"--\")\n    save_path = os.path.join(model_root,\
+          \ \"base_models\", safe_name)\n    if os.path.exists(save_path) and force_download:\n\
+          \        shutil.rmtree(save_path)\n    snapshot_download(repo_id=model_name,\
+          \ local_dir=save_path, local_dir_use_symlinks=False)\n\n    print(f\"\\\
+          n--- Finished in {(time.time() - start_time)/60:.2f} minutes ---\")\n\n\
           \    return save_path\n\n"
         image: python:3.10
     exec-launch-training-job:
@@ -197,8 +202,9 @@ deploymentSpec:
           \ *\n\ndef launch_training_job(\n    base_model_path: str,\n    data_path:\
           \ str,\n    model_root: str,\n    image: str,\n    model_pvc: str,\n   \
           \ data_pvc: str,\n    max_steps: int = 1\n) -> str:\n    import time\n \
-          \   from kubernetes import client, config\n\n    config.load_incluster_config()\n\
-          \    api = client.CustomObjectsApi()\n\n    with open(\"/var/run/secrets/kubernetes.io/serviceaccount/namespace\"\
+          \   from kubernetes import client, config\n    import time\n    start_time\
+          \ = time.time()\n\n    config.load_incluster_config()\n    api = client.CustomObjectsApi()\n\
+          \n    with open(\"/var/run/secrets/kubernetes.io/serviceaccount/namespace\"\
           ) as f:\n        namespace = f.read().strip()\n\n    job_name = f\"qwen-finetune-{int(time.time())}\"\
           \n    # Output dir must be inside the PVC mount\n    output_dir_internal\
           \ = f\"/mnt/models/checkpoints/{job_name}\"\n    output_dir_external = f\"\
@@ -241,7 +247,8 @@ deploymentSpec:
           \            last = conds[-1]\n            if last[\"type\"] == \"Succeeded\"\
           :\n                break\n            if last[\"type\"] == \"Failed\":\n\
           \                raise RuntimeError(f\"Job Failed: {last.get('message')}\"\
-          )\n\n    return output_dir_external\n\n"
+          )\n\n    print(f\"\\n--- Finished in {(time.time() - start_time)/60:.2f}\
+          \ minutes ---\")\n\n    return output_dir_external\n\n"
         image: python:3.10
     exec-merge-adapter:
       container:
@@ -273,15 +280,15 @@ deploymentSpec:
           \ *\n\ndef merge_adapter(base_model_path: str, adapter_path: str, merged_root:\
           \ str) -> str:\n    import torch\n    import os\n    import gc\n    from\
           \ transformers import AutoModelForCausalLM, AutoTokenizer\n    from peft\
-          \ import PeftModel\n\n    print(f\"--- Merging Adapter ---\")\n    print(f\"\
-          Base: {base_model_path}\")\n    print(f\"Adapter: {adapter_path}\")\n\n\
-          \    # 1. Load Base Model in FP16 on CPU\n    # Why CPU? Loading a 4B/7B\
-          \ model in FP16 takes 8GB/15GB RAM. \n    # If we do this on an 11GB GPU,\
-          \ we might OOM before merging.\n    # System RAM is usually cheaper and\
-          \ larger.\n    print(\"Loading base model to System RAM (CPU)...\")\n  \
-          \  base_model = AutoModelForCausalLM.from_pretrained(\n        base_model_path,\n\
-          \        torch_dtype=torch.float16,\n        device_map=\"cpu\", # Force\
-          \ CPU\n        low_cpu_mem_usage=True,\n        trust_remote_code=True\n\
+          \ import PeftModel\n    import time\n    start_time = time.time()\n\n  \
+          \  print(f\"--- Merging Adapter ---\")\n    print(f\"Base: {base_model_path}\"\
+          )\n    print(f\"Adapter: {adapter_path}\")\n\n    # 1. Load Base Model in\
+          \ FP16 on CPU\n    # Why CPU? Loading a 4B/7B model in FP16 takes 8GB/15GB\
+          \ RAM. \n    # If we do this on an 11GB GPU, we might OOM before merging.\n\
+          \    # System RAM is usually cheaper and larger.\n    print(\"Loading base\
+          \ model to System RAM (CPU)...\")\n    base_model = AutoModelForCausalLM.from_pretrained(\n\
+          \        base_model_path,\n        torch_dtype=torch.float16,\n        device_map=\"\
+          cpu\", # Force CPU\n        low_cpu_mem_usage=True,\n        trust_remote_code=True\n\
           \    )\n\n    # 2. Load Adapter\n    print(\"Loading LoRA adapter...\")\n\
           \    model = PeftModel.from_pretrained(base_model, adapter_path)\n\n   \
           \ # 3. Merge\n    print(\"Merging weights...\")\n    model = model.merge_and_unload()\n\
@@ -290,7 +297,8 @@ deploymentSpec:
           \n    # Save tokenizer\n    tokenizer = AutoTokenizer.from_pretrained(base_model_path,\
           \ trust_remote_code=True)\n    tokenizer.save_pretrained(save_path)\n\n\
           \    # Cleanup\n    del model\n    del base_model\n    gc.collect()\n\n\
-          \    return save_path\n\n"
+          \    print(f\"\\n--- Finished in {(time.time() - start_time)/60:.2f} minutes\
+          \ ---\")\n\n    return save_path\n\n"
         image: pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
         resources:
           memoryLimit: 25.769803776
@@ -324,15 +332,16 @@ deploymentSpec:
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef run_inference(model_path: str, prompt: str):\n    import torch\n\
           \    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig\n\
-          \n    print(f\"Loading merged model from {model_path}...\")\n\n    # Load\
-          \ in 4-bit for inference to ensure it fits comfortably in 11GB\n    # even\
-          \ with long context windows.\n    bnb_config = BitsAndBytesConfig(\n   \
-          \     load_in_4bit=True,\n        bnb_4bit_quant_type=\"nf4\",\n       \
-          \ bnb_4bit_compute_dtype=torch.float16\n    )\n\n    tokenizer = AutoTokenizer.from_pretrained(model_path,\
-          \ trust_remote_code=True)\n    model = AutoModelForCausalLM.from_pretrained(\n\
-          \        model_path,\n        quantization_config=bnb_config,\n        device_map=\"\
-          auto\",\n        trust_remote_code=True\n    )\n\n    messages = [\n   \
-          \     {\"role\": \"system\", \"content\": \"You are a scholar from the Victorian\
+          \    import time\n    start_time = time.time()\n    print(f\"Loading merged\
+          \ model from {model_path}...\")\n\n    # Load in 4-bit for inference to\
+          \ ensure it fits comfortably in 11GB\n    # even with long context windows.\n\
+          \    bnb_config = BitsAndBytesConfig(\n        load_in_4bit=True,\n    \
+          \    bnb_4bit_quant_type=\"nf4\",\n        bnb_4bit_compute_dtype=torch.float16\n\
+          \    )\n\n    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)\n\
+          \    model = AutoModelForCausalLM.from_pretrained(\n        model_path,\n\
+          \        quantization_config=bnb_config,\n        device_map=\"auto\",\n\
+          \        trust_remote_code=True\n    )\n\n    messages = [\n        {\"\
+          role\": \"system\", \"content\": \"You are a scholar from the Victorian\
           \ era. Write in an archaic, formal tone.\"},\n        {\"role\": \"user\"\
           , \"content\": prompt}\n    ]\n\n    # Qwen chat template application\n\
           \    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)\n\
@@ -342,7 +351,8 @@ deploymentSpec:
           \            temperature=0.7,\n            top_p=0.9\n        )\n\n    response\
           \ = tokenizer.decode(outputs[0], skip_special_tokens=True)\n    print(\"\
           -\" * 30)\n    print(\"MODEL OUTPUT:\")\n    print(\"-\" * 30)\n    print(response)\n\
-          \n"
+          \n    print(f\"\\n--- Finished in {(time.time() - start_time)/60:.2f} minutes\
+          \ ---\")\n\n"
         image: pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
         resources:
           accelerator:

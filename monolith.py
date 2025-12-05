@@ -27,6 +27,7 @@ def main():
     args = parser.parse_args()
 
     start_time = time.time()
+    start_time_true = start_time
 
     # 1. DOWNLOAD MODEL
     print("\n--- STEP 1: Downloading Model ---")
@@ -36,6 +37,9 @@ def main():
         if os.path.exists(base_model_path): shutil.rmtree(base_model_path)
         os.makedirs(os.path.dirname(base_model_path), exist_ok=True)
         snapshot_download(repo_id=args.model_name, local_dir=base_model_path, local_dir_use_symlinks=False)
+    
+    print(f"\n--- DOWNLOAD MODEL Finished in {(time.time() - start_time)/60:.2f} minutes ---")
+    start_time = time.time()
 
     # 2. DOWNLOAD DATASET (Limited)
     print(f"\n--- STEP 2: Preparing Dataset (Limited to {args.subset_size} books) ---")
@@ -52,7 +56,10 @@ def main():
                 if count >= args.subset_size: break
         final_ds = HFDataset.from_list(data_list)
         final_ds.save_to_disk(data_path)
-
+    
+    print(f"\n--- DOWNLOAD DATASET Finished in {(time.time() - start_time)/60:.2f} minutes ---")
+    start_time = time.time()
+    
     # 3. TRAINING
     print("\n--- STEP 3: Training Model ---")
     # A. Setup Model & Tokenizer (Load to GPU)
@@ -132,6 +139,9 @@ def main():
     del model, trainer, tokenizer
     gc.collect()
     torch.cuda.empty_cache()
+    
+    print(f"\n--- TRAINING Finished in {(time.time() - start_time)/60:.2f} minutes ---")
+    start_time = time.time()
 
     # 4. MERGE ADAPTER (CPU)
     print("\n--- STEP 4: Merging Adapter (CPU) ---")
@@ -148,6 +158,9 @@ def main():
     # CLEANUP CPU Memory
     del model, base_model
     gc.collect()
+    
+    print(f"\n--- MERGE ADAPTER Finished in {(time.time() - start_time)/60:.2f} minutes ---")
+    start_time = time.time()
 
     # 5. INFERENCE (GPU)
     print("\n--- STEP 5: Running Inference (GPU) ---")
@@ -169,8 +182,9 @@ def main():
         outputs = model.generate(**inputs, max_new_tokens=200, do_sample=True)
 
     print("OUTPUT:\n", tokenizer.decode(outputs[0], skip_special_tokens=True))
-
-    print(f"\n--- Finished in {(time.time() - start_time)/60:.2f} minutes ---")
+    
+    print(f"\n--- INFERENCE Finished in {(time.time() - start_time)/60:.2f} minutes ---")
+    print(f"\n--- Finished in {(time.time() - start_time_true)/60:.2f} minutes ---")
 
 if __name__ == "__main__":
     main()
