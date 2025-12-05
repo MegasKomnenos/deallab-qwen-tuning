@@ -50,6 +50,8 @@ def kill_istio_sidecar():
 
 class PipelineMonitor:
     def __init__(self, host=None, namespace="default", userid=None):
+        logging.info(f"KFP SDK Version: {kfp.__version__}")
+        
         # 1. Kubernetes Client Setup
         try:
             config.load_incluster_config()
@@ -71,21 +73,65 @@ class PipelineMonitor:
         try:
             self.kfp_client = kfp.Client(host=host)
             
-            # --- AUTH FIX: Inject UserID Header ---
+            # --- AGGRESSIVE AUTH FIX ---
             if userid:
-                logging.info(f"Injecting auth header for user: {userid}")
-                if hasattr(self.kfp_client, 'api_client') and hasattr(self.kfp_client.api_client, 'default_headers'):
-                    self.kfp_client.api_client.default_headers["kubeflow-userid"] = userid
-                elif hasattr(self.kfp_client, '_api_client') and hasattr(self.kfp_client._api_client, 'default_headers'):
-                     self.kfp_client._api_client.default_headers["kubeflow-userid"] = userid
+                self._inject_auth_headers(userid)
                 
-                if hasattr(self.kfp_client, '_session'):
-                    self.kfp_client._session.headers.update({"kubeflow-userid": userid})
+                # VERIFY AUTH IMMEDIATELY
+                try:
+                    self.kfp_client.list_experiments(page_size=1, namespace=namespace)
+                    logging.info("✅ Authentication verified: Successfully listed experiments.")
+                except Exception as auth_e:
+                    logging.error(f"❌ Authentication verification FAILED: {auth_e}")
+                    logging.error("The script will likely fail below.")
 
             self.namespace = namespace
             logging.info(f"KFP Client initialized. Monitoring namespace: {self.namespace}")
         except Exception as e:
             logging.error(f"Failed to initialize KFP Client. Error: {e}"); exit(1)
+
+    def _inject_auth_headers(self, userid):
+        """
+        Recursively finds API clients and Sessions to inject the UserID header.
+        """
+        header = {"kubeflow-userid": userid}
+        logging.info(f"Attempting to inject auth header: {header}")
+        injected_count = 0
+
+        # 1. Try standard locations
+        targets = [
+            (self.kfp_client, 'api_client'),
+            (self.kfp_client, '_api_client'),
+        ]
+
+        for obj, attr in targets:
+            if hasattr(obj, attr):
+                client_obj = getattr(obj, attr)
+                if hasattr(client_obj, 'default_headers'):
+                    client_obj.default_headers.update(header)
+                    logging.info(f"-> Injected into {attr}.default_headers")
+                    injected_count += 1
+
+        # 2. Try underlying Requests Sessions
+        if hasattr(self.kfp_client, '_session') and hasattr(self.kfp_client._session, 'headers'):
+            self.kfp_client._session.headers.update(header)
+            logging.info("-> Injected into _session.headers")
+            injected_count += 1
+            
+        # 3. Recursive search (Catch-all for generated clients)
+        # Search properties of kfp_client for anything that looks like an API client
+        for attr_name in dir(self.kfp_client):
+            try:
+                val = getattr(self.kfp_client, attr_name)
+                if hasattr(val, 'api_client') and hasattr(val.api_client, 'default_headers'):
+                    val.api_client.default_headers.update(header)
+                    logging.info(f"-> Injected into {attr_name}.api_client.default_headers")
+                    injected_count += 1
+            except:
+                pass
+
+        if injected_count == 0:
+            logging.warning("WARNING: Could not find any HTTP client to inject headers into!")
 
     def launch_pipeline(self, pipeline_file, experiment_name, run_name, params):
         if not os.path.exists(pipeline_file):
@@ -247,7 +293,7 @@ def run_experiment(args):
     MAX_STEPS = args.max_steps
 
     PIPELINE_DISTRIBUTED = "qwen_pipeline_production.yaml"
-    PIPELINE_MONOLITHIC = "qwen_pipeline_monolith.yaml"
+    PIPELINE_MONOLITHIC = "qwen_pipeline_monolithic.yaml"
 
     params = {"max_steps": MAX_STEPS, "subset_size": 500, "force_download": args.force_download}
     monitor = PipelineMonitor(host=args.host, namespace=args.namespace, userid=args.userid)
