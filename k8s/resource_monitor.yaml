@@ -2,26 +2,26 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: qwen-resource-monitor
-  namespace: kubeflow-user-example-com  # CHANGE THIS if your namespace is different
+  namespace: kubeflow-user-example-com
 spec:
   template:
     metadata:
       annotations:
-        sidecar.istio.io/inject: "true" # <--- REQUIRED for Kubeflow communication
+        sidecar.istio.io/inject: "true"
     spec:
-      serviceAccountName: default-editor # This SA usually has permissions to create Runs/Experiments in Kubeflow
+      serviceAccountName: default-editor
       containers:
       - name: monitor
-        # REPLACE with your actual image registry path
-        # If using local Kind/Minikube, you might use just "kfp-monitor:latest" with imagePullPolicy: Never
-        image: kjh123456/kfp-monitor:v2
+        # REPLACE THIS with your updated image tag (e.g., v3)
+        image: kjh123456/kfp-monitor:v3
         imagePullPolicy: IfNotPresent
         command: ["python", "resource_monitor.py"]
         args:
         - "--namespace"
-        - "kubeflow-user-example-com" # Must match the namespace above
-        # Note: We do NOT pass --host, so it defaults to the internal service
-        # Note: We do NOT pass --userid, as the ServiceAccount handles auth
+        - "kubeflow-user-example-com"
+        # --- AUTH FIX: Pass your email here ---
+        - "--userid"
+        - "user@example.com"
         env:
         - name: PYTHONUNBUFFERED
           value: "1"

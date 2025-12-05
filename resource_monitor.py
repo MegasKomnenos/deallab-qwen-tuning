@@ -257,7 +257,7 @@ def run_experiment(args):
     MAX_STEPS = args.max_steps
 
     PIPELINE_DISTRIBUTED = "qwen_pipeline_production.yaml"
-    PIPELINE_MONOLITHIC = "qwen_pipeline_monolithic.yaml"
+    PIPELINE_MONOLITHIC = "qwen_pipeline_monolith.yaml"
 
     params = {"max_steps": MAX_STEPS, "subset_size": 500, "force_download": args.force_download}
     # ---------------------
