@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import re
 import logging
 import os
+import sys
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -34,52 +35,35 @@ def parse_quantity(quantity):
         return 0
 
 class PipelineMonitor:
-    def __init__(self, host=None, namespace="default", userid=None):
+    def __init__(self, host=None, namespace="default"):
+        # 1. Kubernetes Client Setup
         try:
-            # Try loading in-cluster config first, then fall back to local
+            # When running in a pod, this loads the ServiceAccount token mounted at /var/run/secrets/...
+            config.load_incluster_config()
+            logging.info("Loaded in-cluster Kubernetes configuration.")
+        except config.ConfigException:
+            # Fallback for local testing
             try:
-                config.load_incluster_config()
-            except config.ConfigException:
                 config.load_kube_config()
+                logging.info("Loaded local kubeconfig.")
+            except Exception as e:
+                logging.error(f"Could not configure Kubernetes client: {e}"); exit(1)
             
-            self.core_v1 = client.CoreV1Api()
-        except Exception as e:
-            logging.error(f"Could not configure Kubernetes client: {e}"); exit(1)
+        self.core_v1 = client.CoreV1Api()
+
+        # 2. KFP Client Setup
+        # If no host is provided, we assume we are inside the cluster and try the internal DNS.
+        if not host:
+            # Common internal service DNS for Kubeflow Pipelines
+            host = "http://ml-pipeline.kubeflow.svc.cluster.local:8888"
+            logging.info(f"No host provided. Defaulting to internal service: {host}")
 
         try:
-            # --- AUTHENTICATION FIX ---
             self.kfp_client = kfp.Client(host=host)
-            
-            if userid:
-                logging.info(f"Attempting to inject user identity: {userid}")
-                injected = False
-                
-                # 1. Standard KFP v1 approach
-                if hasattr(self.kfp_client, 'api_client') and hasattr(self.kfp_client.api_client, 'default_headers'):
-                    self.kfp_client.api_client.default_headers["kubeflow-userid"] = userid
-                    injected = True
-                    logging.info("Method 1: Injected header into self.kfp_client.api_client.default_headers")
-
-                # 2. Internal client approach (KFP v2 sometimes hides it here)
-                if hasattr(self.kfp_client, '_api_client') and hasattr(self.kfp_client._api_client, 'default_headers'):
-                    self.kfp_client._api_client.default_headers["kubeflow-userid"] = userid
-                    injected = True
-                    logging.info("Method 2: Injected header into self.kfp_client._api_client.default_headers")
-
-                # 3. Requests Session (fallback for raw HTTP calls)
-                if hasattr(self.kfp_client, '_session') and hasattr(self.kfp_client._session, 'headers'):
-                    self.kfp_client._session.headers["kubeflow-userid"] = userid
-                    injected = True
-                    logging.info("Method 3: Injected header into self.kfp_client._session.headers")
-                
-                if not injected:
-                    logging.warning("WARNING: COULD NOT FIND PLACE TO INJECT USERID HEADER! Authentication may fail.")
-                    logging.info(f"Debug: Client dir: {dir(self.kfp_client)}")
-
             self.namespace = namespace
             logging.info(f"KFP Client initialized. Monitoring namespace: {self.namespace}")
         except Exception as e:
-            logging.error(f"Failed to initialize KFP Client. Ensure KFP API is accessible. Error: {e}"); exit(1)
+            logging.error(f"Failed to initialize KFP Client. Error: {e}"); exit(1)
 
     def launch_pipeline(self, pipeline_file, experiment_name, run_name, params):
         if not os.path.exists(pipeline_file):
@@ -263,7 +247,7 @@ def run_experiment(args):
     params = {"max_steps": MAX_STEPS, "subset_size": 500, "force_download": args.force_download}
     # ---------------------
 
-    monitor = PipelineMonitor(host=args.host, namespace=args.namespace, userid=args.userid)
+    monitor = PipelineMonitor(host=args.host, namespace=args.namespace)
     all_results = []
 
     # Compile Pipelines (Ensure Python files are present and compiled YAMLs exist)
@@ -305,16 +289,23 @@ def run_experiment(args):
 
     if all_results:
         df_final = pd.concat(all_results)
-        df_final.to_csv("comparison_results_all.csv", index=False)
-        logging.info(f"\n--- Experiment Finished. Results saved to comparison_results_all.csv ---")
+        
+        # Output to CSV for persistence if volume is mounted
+        try:
+            df_final.to_csv("comparison_results_all.csv", index=False)
+        except Exception as e:
+            logging.warning(f"Could not save CSV to disk: {e}")
+            
+        logging.info(f"\n--- Experiment Finished. Results: ---")
+        # Print to STDOUT so it appears in 'kubectl logs'
+        print(df_final.to_string(index=False))
         return df_final
     return None
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Launch KFP pipelines and monitor resource allocation.")
-    parser.add_argument("--host", type=str, default=None, help="KFP API host (e.g., http://localhost:8080/pipeline). Optional if using proxy.")
+    parser.add_argument("--host", type=str, default=None, help="KFP API host. Defaults to internal DNS if not set.")
     parser.add_argument("--namespace", type=str, required=True, help="The Kubernetes namespace (e.g., kubeflow-user).")
-    parser.add_argument("--userid", type=str, required=False, help="The user identity (email) for auth (e.g., user@example.com).")
     parser.add_argument("--max_steps", type=int, default=1500, help="Number of training steps (Tuned for <2h execution).")
     parser.add_argument("--force_download", action="store_true", help="Force re-download of model and data.")
     parser.add_argument("--skip_distributed", action="store_true", help="Skip the distributed pipeline run.")
