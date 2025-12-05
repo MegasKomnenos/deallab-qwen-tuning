@@ -35,7 +35,7 @@ deploymentSpec:
         command:
         - python
         - monolith.py
-        image: kjh123456/qwen-monolith:latest
+        image: kjh123456/qwen-monolith:v12
         resources:
           accelerator:
             count: '1'
