@@ -123,7 +123,7 @@ def main():
     
     collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-    trainer = SFTTrainer(model=model, train_dataset=train_dataset, peft_config=peft_config, args=training_args, tokenizer=tokenizer, data_collator=collator)
+    trainer = SFTTrainer(model=model, train_dataset=train_dataset, peft_config=peft_config, args=training_args, processing_class=tokenizer, data_collator=collator)
     trainer.train()
     trainer.model.save_pretrained(output_dir)
 
