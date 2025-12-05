@@ -9,6 +9,7 @@ import re
 import logging
 import os
 import sys
+import urllib.request # Added for sidecar termination
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -33,6 +34,20 @@ def parse_quantity(quantity):
         return float(quantity)
     except ValueError:
         return 0
+
+def kill_istio_sidecar():
+    """
+    If an Istio sidecar is present, the Job will not complete even if the python script finishes.
+    We must manually hit the /quitquitquit endpoint of the sidecar.
+    """
+    try:
+        url = "http://localhost:15020/quitquitquit"
+        req = urllib.request.Request(url, method="POST")
+        with urllib.request.urlopen(req) as response:
+            logging.info(f"Istio Sidecar termination request sent. Response: {response.read().decode('utf-8')}")
+    except Exception:
+        # This is normal if Istio is not injected or not running on this port
+        pass
 
 class PipelineMonitor:
     def __init__(self, host=None, namespace="default"):
@@ -242,7 +257,7 @@ def run_experiment(args):
     MAX_STEPS = args.max_steps
 
     PIPELINE_DISTRIBUTED = "qwen_pipeline_production.yaml"
-    PIPELINE_MONOLITHIC = "qwen_pipeline_monolith.yaml"
+    PIPELINE_MONOLITHIC = "qwen_pipeline_monolithic.yaml"
 
     params = {"max_steps": MAX_STEPS, "subset_size": 500, "force_download": args.force_download}
     # ---------------------
@@ -299,7 +314,11 @@ def run_experiment(args):
         logging.info(f"\n--- Experiment Finished. Results: ---")
         # Print to STDOUT so it appears in 'kubectl logs'
         print(df_final.to_string(index=False))
+        
+        kill_istio_sidecar() # <--- TERMINATE SIDECAR HERE
         return df_final
+    
+    kill_istio_sidecar() # Ensure we kill it even if no results
     return None
 
 if __name__ == '__main__':

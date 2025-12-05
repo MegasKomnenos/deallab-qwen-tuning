@@ -5,6 +5,9 @@ metadata:
   namespace: kubeflow-user-example-com  # CHANGE THIS if your namespace is different
 spec:
   template:
+    metadata:
+      annotations:
+        sidecar.istio.io/inject: "true" # <--- REQUIRED for Kubeflow communication
     spec:
       serviceAccountName: default-editor # This SA usually has permissions to create Runs/Experiments in Kubeflow
       containers:
