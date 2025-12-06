@@ -11,7 +11,7 @@ spec:
       modelFormat:
         name: vllm
       runtime: kserve-vllm-custom
-      storageUri: "pvc://llm-workspace-pvc/Qwen--Qwen3-4B-Thinking-2507"
+      storageUri: "pvc://llm-workspace-pvc/qwen_merged_final"
       
       # Resources for this specific model instance
       resources:
