@@ -9,45 +9,75 @@ import re
 import time
 import random
 
+# Try to import readline for input history (Up arrow support)
+try:
+    import readline
+except ImportError:
+    pass  # Windows users might need 'pyreadline3' or just ignore this
+
 # -------------------------------------------------------------------------
 # AESTHETICS & CONFIGURATION
 # -------------------------------------------------------------------------
 
 # ANSI Colors for CRT Monitor Feel
 class Colors:
-    # 38;5;208 is a standard Xterm 256-color code for Orange
     ORANGE = "\033[38;5;208m" 
-    # Bright Green for that classic phosphorus glow
     GREEN = "\033[92m"        
-    # Dim Grey for system messages
     DIM = "\033[2m"           
     RESET = "\033[0m"
     BOLD = "\033[1m"
+    CLEAR_LINE = "\033[K" # ANSI code to clear text from cursor to end of line
 
 # Silence internal request logs
 logging.getLogger("requests").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
-# Update this to match your specific port-forward
+# --- CONFIGURATION ---
 KSERVE_ENDPOINT = "http://localhost:8080/v1/chat/completions"
+# CRITICAL: This must match the URL shown in `kubectl get isvc`
+HOST_HEADER = "qwen-chat-kubeflow-user-example-com.example.com"
 
 HEADERS = {
-    # CRITICAL: This must match the URL shown in `kubectl get isvc`
-    "Host": "qwen-chat-kubeflow-user-example-com.example.com",
+    "Host": HOST_HEADER,
     "Content-Type": "application/json"
 }
 
-# Regex to find thinking blocks
+# Regex to find thinking blocks and ANSI codes
 THINK_PATTERN = re.compile(r'<think>.*?</think>', re.DOTALL)
+ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
 
 def slow_print(text, delay=0.01, color=Colors.RESET):
-    """Simulates old terminal typing effect."""
+    """
+    Simulates old terminal typing effect.
+    Improvements: Now detects ANSI codes so it doesn't print color codes character-by-character.
+    """
     sys.stdout.write(color)
-    for char in text:
-        sys.stdout.write(char)
-        sys.stdout.flush()
-        # Randomize delay slightly for realism
-        time.sleep(delay + random.uniform(0, 0.005)) 
+    
+    # Split text into (ansi_code, regular_text) chunks
+    # This logic prevents the typewriter effect from breaking hidden color codes
+    pos = 0
+    while pos < len(text):
+        match = ANSI_ESCAPE.search(text, pos)
+        if match:
+            # Print text before the code slowly
+            start, end = match.span()
+            for char in text[pos:start]:
+                sys.stdout.write(char)
+                sys.stdout.flush()
+                time.sleep(delay + random.uniform(0, 0.002))
+            
+            # Print the ANSI code instantly (invisible to user but changes state)
+            sys.stdout.write(match.group())
+            sys.stdout.flush()
+            pos = end
+        else:
+            # No more colors, print rest of string
+            for char in text[pos:]:
+                sys.stdout.write(char)
+                sys.stdout.flush()
+                time.sleep(delay + random.uniform(0, 0.002))
+            break
+            
     sys.stdout.write(Colors.RESET + "\n")
 
 def print_banner():
@@ -62,7 +92,7 @@ def print_banner():
   |  |_|  ||_____  |  |   |  |  |_|  ||       ||  |_|  |
   |       | _____| |  |   |  |       ||   _   ||       |
   |_______||_______|  |___|  |_______||__| |__||_______|
-{Colors.DIM}  :: QWEN INTERFACE TERMINAL v1.0 :: SYNCED ::{Colors.RESET}
+{Colors.DIM}  :: QWEN INTERFACE TERMINAL v1.1 :: SYNCED ::{Colors.RESET}
     """
     print(banner)
 
@@ -79,10 +109,10 @@ class InMemorySession:
         
         # System boot-up effect
         print(f"{Colors.DIM}[System] Initializing connection to neural core...{Colors.RESET}")
-        time.sleep(0.5)
+        time.sleep(0.3)
         print(f"{Colors.DIM}[System] Endpoint: {KSERVE_ENDPOINT}{Colors.RESET}")
-        print(f"{Colors.DIM}[System] Host Header: {HEADERS['Host']}{Colors.RESET}")
-        print(f"{Colors.DIM}[System] Thought Stream: {'VISIBLE' if show_thoughts else 'SUPPRESSED'}{Colors.RESET}\n")
+        print(f"{Colors.DIM}[System] Host:     {HEADERS['Host']}{Colors.RESET}")
+        print(f"{Colors.DIM}[System] Thoughts: {'VISIBLE' if show_thoughts else 'SUPPRESSED'}{Colors.RESET}\n")
 
     def send_message(self, user_text: str):
         self.history.append({"role": "user", "content": user_text})
@@ -96,8 +126,10 @@ class InMemorySession:
         }
 
         try:
-            # 1. Send Request
-            sys.stdout.write(f"{Colors.GREEN}Qwen > {Colors.DIM}[Receiving data...]{Colors.RESET}\r")
+            # 1. Send Request with Loading Indicator
+            # \r moves cursor to start of line to allow overwriting later
+            loading_msg = f"{Colors.GREEN}Qwen > {Colors.DIM}[Receiving data...]{Colors.RESET}"
+            sys.stdout.write(loading_msg)
             sys.stdout.flush()
             
             response = requests.post(
@@ -106,45 +138,39 @@ class InMemorySession:
                 json=payload
             )
             
-            sys.stdout.write(" " * 50 + "\r") 
+            # 2. Clear the loading message
+            # \r moves to start, CLEAR_LINE wipes the text
+            sys.stdout.write("\r" + Colors.CLEAR_LINE)
+            sys.stdout.flush()
 
-            # 2. Debugging Block
+            # 3. Validation
             if not response.text.strip():
                 return f"{Colors.DIM}Error: Server returned {response.status_code} but BODY IS EMPTY.{Colors.RESET}"
             
-            # 3. Parse JSON safely
             try:
                 data = response.json()
             except json.JSONDecodeError:
-                return f"{Colors.DIM}Error: Invalid JSON received (Status {response.status_code}).{Colors.RESET}"
+                return f"{Colors.DIM}Error: Invalid JSON (Status {response.status_code}).{Colors.RESET}"
             
-            # ---------------------------------------------------------
-            # NEW: ROBUST ERROR HANDLING
-            # ---------------------------------------------------------
-            
-            # Case A: Standard OpenAI Error (Nested)
-            # { "error": { "message": "..." } }
+            # 4. Error Handling
             if 'error' in data:
-                err_content = data['error']
-                if isinstance(err_content, dict):
-                    msg = err_content.get('message', str(err_content))
-                else:
-                    msg = str(err_content)
+                err = data['error']
+                msg = err.get('message', str(err)) if isinstance(err, dict) else str(err)
                 return f"{Colors.DIM}API Error: {msg}{Colors.RESET}"
 
-            # Case B: Flattened Error (The one you are hitting)
-            # { "message": "...", "type": "...", "code": "..." }
             if 'message' in data and 'code' in data:
                 return f"{Colors.DIM}API Error: {data['message']} (Code: {data['code']}){Colors.RESET}"
 
-            # Case C: Success
+            # 5. Success
             if 'choices' in data:
                 full_content = data['choices'][0]['message']['content']
                 self.history.append({"role": "assistant", "content": full_content})
                 
                 if not self.show_thoughts:
+                    # Remove <think> blocks for clean output
                     display_content = THINK_PATTERN.sub('', full_content).lstrip()
                 else:
+                    # Dim the think blocks for style
                     display_content = full_content.replace("<think>", f"{Colors.DIM}<think>").replace("</think>", f"</think>{Colors.RESET}{Colors.GREEN}")
 
                 return display_content
@@ -152,8 +178,10 @@ class InMemorySession:
             return f"Error: Unexpected response format: {data.keys()}"
 
         except requests.exceptions.ConnectionError:
-            return f"{Colors.DIM}Error: Connection Refused at {KSERVE_ENDPOINT}. Is kubectl port-forward running?{Colors.RESET}"
-        except Exception as e:
+            sys.stdout.write("\r" + Colors.CLEAR_LINE) # Clear loading text on error
+            return f"{Colors.DIM}Error: Connection Refused. Is kubectl port-forward running?{Colors.RESET}"
+        except Exception:
+            sys.stdout.write("\r" + Colors.CLEAR_LINE)
             return traceback.format_exc()
 
 def parse_arguments():
@@ -176,23 +204,27 @@ def main():
 
     while True:
         try:
-            # Styled User Prompt (Orange)
-            # We use standard input but simulate color by printing the prompt part first
+            # 1. User Input
+            # Using standard input() handles the prompt color simulation
             user_input = input(f"{Colors.ORANGE}User > {Colors.RESET}")
             
             if user_input.lower() in ["exit", "quit"]:
                 print(f"\n{Colors.DIM}[System] Terminating Link... Goodbye.{Colors.RESET}")
                 break
             
-            # Print label for Bot
-            sys.stdout.write(f"{Colors.GREEN}Qwen > {Colors.RESET}")
-            sys.stdout.flush()
+            if not user_input.strip():
+                continue
             
-            # Get response
+            # 2. Get Response
+            # Note: We do NOT print "Qwen >" here anymore. 
+            # The session.send_message function handles the temporary "Loading..." label.
             response_text = session.send_message(user_input)
             
-            # Typewriter effect for the response
-            # Calculate dynamic delay: shorter delay for long text to save time
+            # 3. Print Final Output
+            # Now we print the permanent label + the response
+            sys.stdout.write(f"{Colors.GREEN}Qwen > {Colors.RESET}")
+            
+            # Calculate dynamic delay: shorter delay for long text
             speed = 0.02 if len(response_text) < 200 else 0.005
             slow_print(response_text, delay=speed, color=Colors.GREEN)
             print() # Extra spacing

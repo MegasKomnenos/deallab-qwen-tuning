@@ -51,60 +51,92 @@ def train():
 
     print(f"Streaming data from {args.data_path}...")
     
-    # A. Load: We point to the Arrow files directly to enable native streaming
-    # This works even if the data was saved via save_to_disk
-    dataset = load_dataset(
+    # ... (imports remain the same)
+
+def train():
+    # ... (setup code remains the same) ...
+
+    # ------------------------------------------------------------------
+    # IMPROVED DATA LOADING (Fixes Catastrophic Forgetting)
+    # ------------------------------------------------------------------
+    
+    # 1. Load your Style Data (PG19)
+    style_dataset = load_dataset(
         "arrow", 
         data_files=f"{args.data_path}/*.arrow", 
         split="train", 
         streaming=True
     )
     
-    dataset = dataset.repeat(10)
+    # 2. Load a "Replay Buffer" (Normal Chat Data)
+    # We mix in ~5% normal chat data so it remembers how to say "Hi"
+    # 'imone/ChatEtiquette_ShareGPT' is a small, clean chat dataset
+    chat_dataset = load_dataset("imone/ChatEtiquette_ShareGPT", split="train", streaming=True)
+    
+    # Interleave: 90% Style Data, 10% Normal Chat Data
+    from datasets import interleave_datasets
+    combined_dataset = interleave_datasets([style_dataset, chat_dataset], probabilities=[0.9, 0.1], seed=42)
+    
+    # Shuffle buffer
+    dataset = combined_dataset.shuffle(seed=42, buffer_size=100)
 
-    # B. Shuffle: Library implementation of "Wide Sampling"
-    # It fills a buffer of 10k items and samples randomly from it.
-    dataset = dataset.shuffle(seed=42, buffer_size=100)
-
-    # C. Transform: The "Shallow Slice" logic
-    # We define the logic, but .map() handles the execution optimization
-    CHARS_PER_SAMPLE = 10000
-    SYSTEM_PROMPT = ""
-
+    # ------------------------------------------------------------------
+    # IMPROVED PROCESSING (Fixes The "Ignore User" Bug)
+    # ------------------------------------------------------------------
+    CHARS_PER_SAMPLE = 2048 # Reduced to fit context better
+    
     def process_batch(examples):
-        # examples is now a dictionary of lists: {'text': ["...", "..."]}
         batch_input_ids = []
         
-        for text in examples['text']:
-            # 1. Random Slicing (Same logic, just inside loop)
-            if len(text) > CHARS_PER_SAMPLE:
-                max_start = len(text) - CHARS_PER_SAMPLE
-                start = random.randint(0, max_start)
-                text = text[start : start + CHARS_PER_SAMPLE]
+        # Handle different dataset columns (Style data has 'text', Chat data has 'conversations')
+        texts = examples.get('text', [])
+        conversations = examples.get('conversations', [])
+        
+        # CASE A: It's a Book chunk (Style Training)
+        for text in texts:
+            if len(text) < 200: continue # Skip tiny fragments
             
-            # 2. Templating
-            messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": "Write a passage in your natural style."},
-                {"role": "assistant", "content": text}
+            # Slice a chunk
+            max_len = min(len(text), CHARS_PER_SAMPLE)
+            text_chunk = text[:max_len]
+            
+            # SPLIT LOGIC: 
+            # We split the text so the User provides the "Seed" and Assistant provides the "Style"
+            # This forces the model to pay attention to the user input.
+            split_idx = text_chunk.find(" ", 100) # Find a space after 100 chars
+            if split_idx == -1: split_idx = 100
+            
+            user_context = text_chunk[:split_idx]
+            assistant_completion = text_chunk[split_idx:]
+            
+            msgs = [
+                # We lock the style to a SPECIFIC system prompt
+                {"role": "system", "content": "You are a Victorian novelist. Continue the story in your archaic, formal style."},
+                {"role": "user", "content": user_context}, 
+                {"role": "assistant", "content": assistant_completion}
             ]
-            
-            # Prepare for tokenizer (do not tokenize yet to allow batching)
-            # We apply template to string, then batch tokenize
-            batch_input_ids.append(
-                tokenizer.apply_chat_template(messages, tokenize=False)
-            )
+            batch_input_ids.append(tokenizer.apply_chat_template(msgs, tokenize=False))
 
-        # 3. Batched Tokenization (The Speedup)
-        # This runs in Rust (fast)
+        # CASE B: It's a Normal Chat (Preservation Training)
+        # We process the replay buffer data as-is to retain basic chat skills
+        for conv in conversations:
+            # conv is usually [{'from': 'human', 'value': '...'}, {'from': 'gpt', 'value': '...'}]
+            # We map it to Qwen format
+            msgs = [{"role": "system", "content": "You are a helpful assistant."}]
+            for turn in conv:
+                role = "user" if turn['from'] == 'human' else "assistant"
+                msgs.append({"role": role, "content": turn['value']})
+            
+            batch_input_ids.append(tokenizer.apply_chat_template(msgs, tokenize=False))
+
+        # Tokenize
         tokenized = tokenizer(
             batch_input_ids,
             truncation=True,
             max_length=2048,
-            padding=False, # DataCollator will pad dynamically
+            padding=False,
             add_special_tokens=False 
         )
-        
         return {"input_ids": tokenized["input_ids"]}
 
     # ENABLE BATCHED=TRUE
