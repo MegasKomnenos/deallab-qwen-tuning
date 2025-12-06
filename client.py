@@ -88,7 +88,7 @@ class InMemorySession:
         self.history.append({"role": "user", "content": user_text})
 
         payload = {
-            "model": "qwen",
+            "model": "qwen_merged_final",
             "messages": self.history,
             "max_tokens": 4096,
             "temperature": 0.7,
