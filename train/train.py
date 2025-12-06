@@ -2,7 +2,7 @@ import argparse
 import os
 import torch
 import random
-from datasets import load_dataset
+from datasets import load_from_disk
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -16,6 +16,7 @@ def train():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base_model_path", type=str, required=True)
     parser.add_argument("--data_path", type=str, required=True)
+    parser.add_argument("--playback_path", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--max_steps", type=int, default=50) 
     args = parser.parse_args()
@@ -40,8 +41,8 @@ def train():
         device_map="auto",
         trust_remote_code=True
     )
-    model.gradient_checkpointing_enable()
     model = prepare_model_for_kbit_training(model)
+    model.gradient_checkpointing_enable()
 
     peft_config = LoraConfig(
         r=16, lora_alpha=32, lora_dropout=0.05, bias="none", 
@@ -55,88 +56,73 @@ def train():
     # IMPROVED DATA LOADING (Fixes Catastrophic Forgetting)
     # ------------------------------------------------------------------
     
-    # 1. Load your Style Data (PG19)
-    style_dataset = load_dataset(
-        "arrow", 
-        data_files=f"{args.data_path}/*.arrow", 
-        split="train", 
-        streaming=True
-    )
-    
-    # 2. Load a "Replay Buffer" (Normal Chat Data)
-    # We mix in ~5% normal chat data so it remembers how to say "Hi"
-    # 'imone/ChatEtiquette_ShareGPT' is a small, clean chat dataset
-    chat_dataset = load_dataset("anon8231489123/ShareGPT_Vicuna_unfiltered", split="train", streaming=True)
+    style_dataset = load_from_disk(args.data_path).to_iterable_dataset()
+    chat_dataset = load_from_disk(args.playback_path).to_iterable_dataset()
     
     # Interleave: 90% Style Data, 10% Normal Chat Data
     from datasets import interleave_datasets
-    combined_dataset = interleave_datasets([style_dataset, chat_dataset], probabilities=[0.9, 0.1], seed=42)
+    combined_dataset = interleave_datasets([style_dataset, chat_dataset], probabilities=[0.9, 0.1])
     
-    # Shuffle buffer
-    dataset = combined_dataset.shuffle(seed=42, buffer_size=100)
-
-    # ------------------------------------------------------------------
-    # IMPROVED PROCESSING (Fixes The "Ignore User" Bug)
-    # ------------------------------------------------------------------
-    CHARS_PER_SAMPLE = 2048 # Reduced to fit context better
+    dataset = combined_dataset.shuffle(buffer_size=10000)
     
-    def process_batch(examples):
+    def process_batch(items):
         batch_input_ids = []
+        batch_labels = []  # <--- New list for labels
         
-        # Handle different dataset columns (Style data has 'text', Chat data has 'conversations')
-        texts = examples.get('text', [])
-        conversations = examples.get('conversations', [])
-        
-        # CASE A: It's a Book chunk (Style Training)
-        for text in texts:
-            if len(text) < 200: continue # Skip tiny fragments
+        for i in range(len(items["messages"])):
+            msgs = []
             
-            # Slice a chunk
-            max_len = min(len(text), CHARS_PER_SAMPLE)
-            text_chunk = text[:max_len]
+            if items["type"][i] == "style":
+                msgs.append({
+                    "role": "system", 
+                    "content": "You are a Victorian novelist. Continue the story in your archaic, formal style."
+                })
+            else:
+                msgs.append({
+                    "role": "system", 
+                    "content": "You are a helpful chatbot."
+                })
+                
+            msgs.extend(items["messages"][i]) 
+            prompt_msgs = msgs[:-1]
             
-            # SPLIT LOGIC: 
-            # We split the text so the User provides the "Seed" and Assistant provides the "Style"
-            # This forces the model to pay attention to the user input.
-            split_idx = text_chunk.find(" ", 100) # Find a space after 100 chars
-            if split_idx == -1: split_idx = 100
+            full_text = tokenizer.apply_chat_template(msgs, tokenize=False)
+            prompt_text = tokenizer.apply_chat_template(prompt_msgs, tokenize=False)
             
-            user_context = text_chunk[:split_idx]
-            assistant_completion = text_chunk[split_idx:]
+            tokenized_full = tokenizer(
+                full_text, 
+                truncation=True, 
+                max_length=2048,
+                add_special_tokens=False
+            )["input_ids"]
             
-            msgs = [
-                # We lock the style to a SPECIFIC system prompt
-                {"role": "system", "content": "You are a Victorian novelist. Continue the story in your archaic, formal style."},
-                {"role": "user", "content": user_context}, 
-                {"role": "assistant", "content": assistant_completion}
-            ]
-            batch_input_ids.append(tokenizer.apply_chat_template(msgs, tokenize=False))
-        
-        # CASE B: It's a Normal Chat (Preservation Training)
-        # We process the replay buffer data as-is to retain basic chat skills
-        for conv in conversations:
-            # conv is usually [{'from': 'human', 'value': '...'}, {'from': 'gpt', 'value': '...'}]
-            # We map it to Qwen format
-            msgs = [{"role": "system", "content": "You are a helpful assistant."}]
-            for turn in conv:
-                role = "user" if turn['from'] == 'human' else "assistant"
-                msgs.append({"role": role, "content": turn['value']})
+            tokenized_prompt = tokenizer(
+                prompt_text, 
+                truncation=True, 
+                max_length=2048,
+                add_special_tokens=False
+            )["input_ids"]
             
-            batch_input_ids.append(tokenizer.apply_chat_template(msgs, tokenize=False))
+            labels = list(tokenized_full)
+            
+            prompt_len = len(tokenized_prompt)
+            
+            # Mask the prompt tokens (System + User) so the model isn't trained on them
+            for j in range(prompt_len):
+                if j < len(labels): # Safety check
+                    labels[j] = -100
+            
+            batch_input_ids.append(tokenized_full)
+            batch_labels.append(labels)
 
-        # Tokenize
-        tokenized = tokenizer(
-            batch_input_ids,
-            truncation=True,
-            max_length=2048,
-            padding=False,
-            add_special_tokens=False 
-        )
-        return {"input_ids": tokenized["input_ids"]}
+        # Return both inputs and labels
+        return {
+            "input_ids": batch_input_ids, 
+            "labels": batch_labels
+        }
 
     # ENABLE BATCHED=TRUE
-    train_dataset = dataset.map(process_batch, batched=True, batch_size=16, remove_columns=["text"])
-
+    train_dataset = dataset.map(process_batch, batched=True, batch_size=32, remove_columns=["messages", "type"])
     # ------------------------------------------------------------------
     # 3. TRAINING CONFIG
     # ------------------------------------------------------------------

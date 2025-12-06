@@ -13,6 +13,9 @@ WORKER_IMAGE = "pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime"
 MOUNT_PATH_MODEL = "/mnt/models"
 MOUNT_PATH_DATA = "/mnt/data"
 
+DATSET_NAME = "deepmind/pg19"
+PLAYBACK_NAME = "OpenAssistant/oasst2"
+
 # -------------------------------------------------------------------------
 # COMPONENT 1 & 2: INGESTION (Unchanged, included for context)
 # -------------------------------------------------------------------------
@@ -38,10 +41,8 @@ def download_model(model_name: str, model_root: str, force_download: bool) -> st
     packages_to_install=["datasets==2.19.0", "huggingface_hub", "scipy"] 
 )
 def download_dataset(
-    dataset_name: str,
     data_root: str,
-    force_download: bool,
-    subset_size: int
+    force_download: bool
 ) -> str:
     import os
     import shutil
@@ -49,7 +50,7 @@ def download_dataset(
     import time
     start_time = time.time()
     
-    save_path = os.path.join(data_root, "raw", "pg19_large_cache")
+    save_path = os.path.join(data_root, "raw", "pg19")
 
     # ... (Cache check logic remains the same) ...
     if os.path.exists(save_path):
@@ -60,27 +61,157 @@ def download_dataset(
             return save_path
 
     ds = load_dataset(
-        dataset_name,
-        split="train",
-        streaming=True,
-        trust_remote_code=True
+        DATSET_NAME,
+        split="train"
     )
-
-    data_list = []
-    count = 0
-
-    # Download a chunk
-    for item in ds:
-        if len(item['text']) > 5000:
-            data_list.append({"text": item['text']})
-            count += 1
-            if count >= subset_size:
-                break
-
-    print(f"Saving {count} books to disk...")
-    final_ds = HFDataset.from_list(data_list)
+    
+    CHARS_PER_SAMPLE = 4096
+    
+    def process_batch(items):
+        out = []
+        for text in items['text']:
+            buf = []
+            
+            i, j = (0, CHARS_PER_SAMPLE)
+            
+            while True:
+                cur = text[i:j]
+                k = max(1, len(cur)//2)
+                buf.append([
+                    {"role": "user", "content": cur[:k]},
+                    {"role": "assistant", "content": cur[k:]} 
+                ])
+                i = i+k
+                j = min(len(text), j+k)
+                if 1.75*(j - i) < CHARS_PER_SAMPLE:
+                    buf[-1][-1]["content"] += text[i:j]
+                    break
+        
+            out.extend(buf)
+            
+        return { "messages": out, "type": ["style"] * len(out) }
+    
+    final_ds = ds.map(process_batch, batched=True, batch_size=64, remove_columns=["text"])
+    final_ds = final_ds.select_columns(["messages", "type"])
+    
+    print(f"Total examples generated: {len(final_ds)}")
     os.makedirs(save_path, exist_ok=True)
     final_ds.save_to_disk(save_path)
+    
+    print(f"\n--- Finished in {(time.time() - start_time)/60:.2f} minutes ---")
+
+    return save_path
+    
+@dsl.component(
+    base_image=BASE_IMAGE,
+    packages_to_install=["datasets==2.19.0", "huggingface_hub", "scipy", "requests"] 
+)
+def download_playback(
+    data_root: str,
+    force_download: bool,
+) -> str:
+    import os
+    import shutil
+    from datasets import load_dataset, Dataset as HFDataset
+    import time
+    import json
+    import gzip
+    import requests
+    
+    start_time = time.time()
+    
+    save_path = os.path.join(data_root, "raw", "oasst2")
+
+    # ... (Cache check logic remains the same) ...
+    if os.path.exists(save_path):
+        if force_download:
+            shutil.rmtree(save_path)
+        else:
+            print(f"Large cached dataset found at {save_path}. Skipping download.")
+            return save_path
+            
+    url = "https://huggingface.co/datasets/OpenAssistant/oasst2/resolve/main/2023-11-05_oasst2_ready.trees.jsonl.gz"
+    
+    print(f"Downloading and loading trees from {url}...")
+
+    # 1. Stream the file directly from the web
+    # 2. Decompress on the fly using gzip
+    # 3. Parse each line as a JSON object
+    with requests.get(url, stream=True) as r:
+        r.raise_for_status()
+        # 'rt' mode opens the file in read-text mode, handling the gzip decompression
+        with gzip.open(r.raw, "rt", encoding="utf-8") as f:
+            # Load all trees into a list
+            trees = [json.loads(line) for line in f]
+
+    print(f"Successfully loaded {len(trees)} trees.")
+    
+    role_map = {
+        "prompter": "user",
+        "assistant": "assistant"
+    }
+
+    def extract_conversation_paths(node, current_history=None):
+        """
+        Recursive function to traverse the tree and extract all linear 
+        conversation paths (Root -> Leaf).
+        """
+        if current_history is None:
+            current_history = []
+            
+        if node['role'] == "assistant" and (not "labels" in node or float(node["labels"]["quality"]["value"]) < 0.5):
+            return []
+
+        # create the message object for the current node
+        message = {
+            "role": role_map.get(node['role'], node['role']),
+            "content": node['text']
+        }
+        
+        # Create a new history including this node
+        new_history = current_history + [message]
+
+        # If this is a leaf node (no replies), return the path
+        if not node.get('replies'):
+            return [new_history]
+        
+        # If there are replies, recurse down each branch
+        paths = []
+        for reply in node['replies']:
+            paths.extend(extract_conversation_paths(reply, new_history))
+        if len(paths) == 0:
+            paths = [new_history]
+        return paths
+        
+    all_conversations = []
+
+    print("Processing trees into linear conversations...")
+
+    for tree in trees:
+        if tree["prompt"]["lang"] != "en":
+            continue
+            
+        paths = extract_conversation_paths(tree)
+        
+        # Optional: Filter for quality here (e.g., only keep paths ending in assistant)
+        for path in paths:
+            while len(path) > 0 and path[-1]["role"] != "assistant":
+                path.pop()
+            
+            if len(path) == 0:
+                continue
+            
+            all_conversations.append(path)
+
+    print(f"Extracted {len(all_conversations)} unique conversation paths.")
+
+    # Create the Hugging Face Dataset
+    # We wrap the list in a dict structure: {'messages': [ ... ]}
+    formatted_data = [{"messages": conv, "type": "playback"} for conv in all_conversations]
+    
+    hf_dataset = HFDataset.from_list(formatted_data)
+    os.makedirs(save_path, exist_ok=True)
+    hf_dataset.save_to_disk(save_path)
     
     print(f"\n--- Finished in {(time.time() - start_time)/60:.2f} minutes ---")
 
@@ -93,6 +224,7 @@ def download_dataset(
 def launch_training_job(
     base_model_path: str,
     data_path: str,
+    playback_path: str,
     model_root: str,
     image: str,
     model_pvc: str,
@@ -119,6 +251,7 @@ def launch_training_job(
     cmd_args = [
         "--base_model_path", base_model_path,
         "--data_path", data_path,
+        "--playback_path", playback_path,
         "--output_dir", output_dir_internal,
         "--max_steps", str(max_steps)
     ]
@@ -143,7 +276,7 @@ def launch_training_job(
                                 "image": image,
                                 "args": cmd_args,
                                 "resources": {
-                                    "limits": {"nvidia.com/gpu": 1, "memory": "16Gi", "cpu": "4"}, 
+                                    "limits": {"nvidia.com/gpu": 1, "memory": "24Gi", "cpu": "4"}, 
                                     "requests": {"cpu": "2"}
                                 },
                                 "volumeMounts": [
@@ -305,23 +438,25 @@ def run_inference(model_path: str, prompt: str):
 @dsl.pipeline(name="qwen-finetune-production")
 def llm_pipeline(
     model_name: str = "Qwen/Qwen3-4B-Thinking-2507", # Example model
-    dataset_name: str = "deepmind/pg19",
     model_pvc: str = "llm-workspace-pvc",
     data_pvc: str = "llm-data-pvc",
-    training_image_uri: str = "kjh123456/qwen-trainer:v24",
+    training_image_uri: str = "kjh123456/qwen-trainer:v26",
     force_download: bool = True,
-    subset_size: int = 500,
     max_steps: int = 50,
 ):
     dl_model = download_model(model_name=model_name, model_root=MOUNT_PATH_MODEL, force_download=force_download)
     kubernetes.mount_pvc(dl_model, pvc_name=model_pvc, mount_path=MOUNT_PATH_MODEL)
 
-    dl_data = download_dataset(dataset_name=dataset_name, data_root=MOUNT_PATH_DATA, force_download=force_download, subset_size=subset_size)
+    dl_data = download_dataset(data_root=MOUNT_PATH_DATA, force_download=force_download)
     kubernetes.mount_pvc(dl_data, pvc_name=data_pvc, mount_path=MOUNT_PATH_DATA)
+    
+    dl_playback = download_playback(data_root=MOUNT_PATH_DATA, force_download=force_download)
+    kubernetes.mount_pvc(dl_playback, pvc_name=data_pvc, mount_path=MOUNT_PATH_DATA)
 
     train_job = launch_training_job(
         base_model_path=dl_model.output,
         data_path=dl_data.output,
+        playback_path=dl_playback.output,
         model_root=MOUNT_PATH_MODEL,
         image=training_image_uri,
         model_pvc=model_pvc,
