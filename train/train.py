@@ -50,11 +50,6 @@ def train():
     )
 
     print(f"Streaming data from {args.data_path}...")
-    
-    # ... (imports remain the same)
-
-def train():
-    # ... (setup code remains the same) ...
 
     # ------------------------------------------------------------------
     # IMPROVED DATA LOADING (Fixes Catastrophic Forgetting)
