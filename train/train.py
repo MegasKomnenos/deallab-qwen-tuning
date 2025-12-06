@@ -66,7 +66,7 @@ def train():
     # 2. Load a "Replay Buffer" (Normal Chat Data)
     # We mix in ~5% normal chat data so it remembers how to say "Hi"
     # 'imone/ChatEtiquette_ShareGPT' is a small, clean chat dataset
-    chat_dataset = load_dataset("imone/ChatEtiquette_ShareGPT", split="train", streaming=True)
+    chat_dataset = load_dataset("anon8231489123/ShareGPT_Vicuna_unfiltered", split="train", streaming=True)
     
     # Interleave: 90% Style Data, 10% Normal Chat Data
     from datasets import interleave_datasets
@@ -111,7 +111,7 @@ def train():
                 {"role": "assistant", "content": assistant_completion}
             ]
             batch_input_ids.append(tokenizer.apply_chat_template(msgs, tokenize=False))
-
+        
         # CASE B: It's a Normal Chat (Preservation Training)
         # We process the replay buffer data as-is to retain basic chat skills
         for conv in conversations:
