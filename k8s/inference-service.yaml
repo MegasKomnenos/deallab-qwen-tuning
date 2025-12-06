@@ -40,3 +40,28 @@ spec:
         - --max-model-len=6144
         - --trust-remote-code
         - --dtype=float16
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: qwen-chat-direct
+  namespace: kubeflow-user-example-com
+spec:
+  gateways:
+    - kubeflow/kubeflow-gateway
+  
+  hosts:
+    - "qwen-chat-kubeflow-user-example-com.example.com"
+  
+  http:
+    - match:
+        - uri:
+            prefix: /
+      
+      route:
+        - destination:
+            host: qwen-chat-predictor.kubeflow-user-example-com.svc.cluster.local
+            port:
+              number: 80
+      
+      timeout: 300s
