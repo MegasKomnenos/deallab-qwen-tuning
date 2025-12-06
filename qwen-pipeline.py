@@ -18,7 +18,7 @@ DATASET_NAME = "deepmind/pg19"
 PLAYBACK_NAME = "OpenAssistant/oasst2"
 
 # -------------------------------------------------------------------------
-# COMPONENT 1 & 2: INGESTION (Unchanged, included for context)
+# COMPONENT 1 & 2: INGESTION (Unchanged)
 # -------------------------------------------------------------------------
 @dsl.component(base_image=BASE_IMAGE, packages_to_install=["huggingface_hub"])
 def download_model(model_name: str, model_root: str, force_download: bool) -> str:
@@ -54,7 +54,6 @@ def download_dataset(
     
     save_path = os.path.join(data_root, "raw", "pg19")
 
-    # ... (Cache check logic remains the same) ...
     if os.path.exists(save_path):
         if force_download:
             shutil.rmtree(save_path)
@@ -132,7 +131,6 @@ def download_playback(
     
     save_path = os.path.join(playback_root, "raw", "oasst2")
 
-    # ... (Cache check logic remains the same) ...
     if os.path.exists(save_path):
         if force_download:
             shutil.rmtree(save_path)
@@ -144,14 +142,9 @@ def download_playback(
     
     print(f"Downloading and loading trees from {url}...")
 
-    # 1. Stream the file directly from the web
-    # 2. Decompress on the fly using gzip
-    # 3. Parse each line as a JSON object
     with requests.get(url, stream=True) as r:
         r.raise_for_status()
-        # 'rt' mode opens the file in read-text mode, handling the gzip decompression
         with gzip.open(r.raw, "rt", encoding="utf-8") as f:
-            # Load all trees into a list
             trees = [json.loads(line) for line in f]
 
     print(f"Successfully loaded {len(trees)} trees.")
@@ -162,30 +155,22 @@ def download_playback(
     }
 
     def extract_conversation_paths(node, current_history=None):
-        """
-        Recursive function to traverse the tree and extract all linear 
-        conversation paths (Root -> Leaf).
-        """
         if current_history is None:
             current_history = []
             
         if node['role'] == "assistant" and (not "labels" in node or not "quality" in node["labels"] or float(node["labels"]["quality"]["value"]) < 0.5):
             return []
 
-        # create the message object for the current node
         message = {
             "role": role_map.get(node['role'], node['role']),
             "content": node['text']
         }
         
-        # Create a new history including this node
         new_history = current_history + [message]
 
-        # If this is a leaf node (no replies), return the path
         if not node.get('replies'):
             return [new_history]
         
-        # If there are replies, recurse down each branch
         paths = []
         for reply in node['replies']:
             paths.extend(extract_conversation_paths(reply, new_history))
@@ -203,7 +188,6 @@ def download_playback(
             
         paths = extract_conversation_paths(tree["prompt"])
         
-        # Optional: Filter for quality here (e.g., only keep paths ending in assistant)
         for path in paths:
             while len(path) > 0 and path[-1]["role"] != "assistant":
                 path.pop()
@@ -215,8 +199,6 @@ def download_playback(
 
     print(f"Extracted {len(all_conversations)} unique conversation paths.")
 
-    # Create the Hugging Face Dataset
-    # We wrap the list in a dict structure: {'messages': [ ... ]}
     formatted_data = [{"messages": conv, "type": "playback"} for conv in all_conversations]
     
     hf_dataset = Dataset.from_list(formatted_data)
@@ -228,7 +210,7 @@ def download_playback(
     return save_path
 
 # -------------------------------------------------------------------------
-# COMPONENT 4: LAUNCH TRAINING JOB (Arguments matched to new train.py)
+# COMPONENT 4: LAUNCH TRAINING JOB (Unchanged)
 # -------------------------------------------------------------------------
 @dsl.component(base_image=BASE_IMAGE, packages_to_install=["kubernetes"])
 def launch_training_job(
@@ -254,11 +236,9 @@ def launch_training_job(
         namespace = f.read().strip()
 
     job_name = f"qwen-finetune-{int(time.time())}"
-    # Output dir must be inside the PVC mount
     output_dir_internal = f"/mnt/models/checkpoints/{job_name}"
     output_dir_external = f"{model_root}/checkpoints/{job_name}"
 
-    # Arguments passed strictly to argparse in train.py
     cmd_args = [
         "--base_model_path", base_model_path,
         "--data_path", data_path,
@@ -328,7 +308,7 @@ def launch_training_job(
     return output_dir_external
 
 # -------------------------------------------------------------------------
-# COMPONENT 5: MERGE ADAPTER (Optimized for Stability)
+# COMPONENT 5: MERGE ADAPTER (UPDATED FOR OPLoRA)
 # -------------------------------------------------------------------------
 @dsl.component(
     base_image=WORKER_IMAGE, 
@@ -341,21 +321,23 @@ def merge_adapter(base_model_path: str, adapter_path: str, merged_root: str) -> 
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel
     import time
+    
     start_time = time.time()
     
-    print(f"--- Merging Adapter ---")
+    # Must match the rank used in train.py
+    OPLORA_RANK = 16 
+    
+    print(f"--- Merging OPLoRA Adapter ---")
     print(f"Base: {base_model_path}")
     print(f"Adapter: {adapter_path}")
 
-    # 1. Load Base Model in FP16 on CPU
-    # Why CPU? Loading a 4B/7B model in FP16 takes 8GB/15GB RAM. 
-    # If we do this on an 11GB GPU, we might OOM before merging.
-    # System RAM is usually cheaper and larger.
-    print("Loading base model to System RAM (CPU)...")
+    # 1. Load Base Model in Float32 (CPU)
+    # We use Float32 to ensure the SVD calculation is stable/accurate.
+    print("Loading base model to System RAM (CPU, Float32)...")
     base_model = AutoModelForCausalLM.from_pretrained(
         base_model_path,
-        torch_dtype=torch.float16,
-        device_map="cpu", # Force CPU
+        torch_dtype=torch.float32, 
+        device_map="cpu",
         low_cpu_mem_usage=True,
         trust_remote_code=True
     )
@@ -364,6 +346,72 @@ def merge_adapter(base_model_path: str, adapter_path: str, merged_root: str) -> 
     print("Loading LoRA adapter...")
     model = PeftModel.from_pretrained(base_model, adapter_path)
 
+    # ------------------------------------------------------------------
+    # OPLoRA TRANSFORMATION
+    # We must project A and B into the orthogonal complement of W 
+    # before merging, effectively "baking in" the hooks.
+    # ------------------------------------------------------------------
+    print(f"Applying OPLoRA projections (Rank {OPLORA_RANK}) to weights...")
+    
+    with torch.no_grad():
+        count = 0
+        for name, module in model.named_modules():
+            # Check for LoRA layers
+            if hasattr(module, "lora_A") and "default" in module.lora_A:
+                base_layer = getattr(module, "base_layer", module)
+                if not hasattr(base_layer, "weight"): continue
+                
+                # 1. Compute SVD of Base Weight
+                # We cast to float32 for stability
+                w_data = base_layer.weight.data.to(torch.float32)
+                
+                try:
+                    # U: (Out, k), V: (In, k)
+                    U, S, V = torch.svd_lowrank(w_data, q=OPLORA_RANK, niter=2)
+                except Exception as e:
+                    print(f"SVD failed for {name}: {e}. Skipping projection.")
+                    continue
+                
+                # 2. Get LoRA Weights
+                # A: (r, In), B: (Out, r)
+                # Ensure they are float32 for the math
+                lora_A_param = module.lora_A["default"].weight
+                lora_B_param = module.lora_B["default"].weight
+                
+                A = lora_A_param.data.to(torch.float32)
+                B = lora_B_param.data.to(torch.float32)
+                
+                # 3. Apply Projections (Bake the hooks into the weights)
+                
+                # Input Projector: P_R = I - V V^T
+                # A_new = A @ P_R = A - (A @ V) @ V^T
+                
+                # A @ V -> (r, In) @ (In, k) -> (r, k)
+                AV = torch.matmul(A, V) 
+                # AV @ V.T -> (r, k) @ (k, In) -> (r, In)
+                A_correction = torch.matmul(AV, V.t())
+                
+                # Update A
+                lora_A_param.data = (A - A_correction).to(lora_A_param.dtype)
+                
+                # Output Projector: P_L = I - U U^T
+                # B_new = P_L @ B = B - U @ (U^T @ B)
+                
+                # U.T @ B -> (k, Out) @ (Out, r) -> (k, r)
+                UtB = torch.matmul(U.t(), B)
+                # U @ UtB -> (Out, k) @ (k, r) -> (Out, r)
+                B_correction = torch.matmul(U, UtB)
+                
+                # Update B
+                lora_B_param.data = (B - B_correction).to(lora_B_param.dtype)
+                
+                count += 1
+                
+                # Cleanup huge matrices immediately
+                del w_data, U, S, V, AV, A_correction, UtB, B_correction, A, B
+    
+    print(f"OPLoRA transformation applied to {count} layers.")
+    
     # 3. Merge
     print("Merging weights...")
     model = model.merge_and_unload()
@@ -373,11 +421,9 @@ def merge_adapter(base_model_path: str, adapter_path: str, merged_root: str) -> 
     print(f"Saving merged model to {save_path}...")
     model.save_pretrained(save_path)
     
-    # Save tokenizer
     tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
     tokenizer.save_pretrained(save_path)
     
-    # Cleanup
     del model
     del base_model
     gc.collect()
@@ -387,7 +433,7 @@ def merge_adapter(base_model_path: str, adapter_path: str, merged_root: str) -> 
     return save_path
 
 # -------------------------------------------------------------------------
-# COMPONENT 6: INFERENCE (Optimized for 11GB VRAM)
+# COMPONENT 6: INFERENCE (Unchanged)
 # -------------------------------------------------------------------------
 @dsl.component(
     base_image=WORKER_IMAGE, 

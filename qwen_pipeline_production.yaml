@@ -156,7 +156,7 @@ deploymentSpec:
           \    os.makedirs(save_path, exist_ok=True)\n    final_ds.save_to_disk(save_path)\n\
           \n    print(f\"\\n--- Finished in {(time.time() - start_time)/60:.2f} minutes\
           \ ---\")\n\n    return save_path\n\n"
-        image: python:3.10
+        image: kjh123456/qwen-base:v2
     exec-download-model:
       container:
         args:
@@ -193,7 +193,7 @@ deploymentSpec:
           \ local_dir=save_path, local_dir_use_symlinks=False)\n\n    print(f\"\\\
           n--- Finished in {(time.time() - start_time)/60:.2f} minutes ---\")\n\n\
           \    return save_path\n\n"
-        image: python:3.10
+        image: kjh123456/qwen-base:v2
     exec-download-playback:
       container:
         args:
@@ -271,7 +271,7 @@ deploymentSpec:
           \    os.makedirs(save_path, exist_ok=True)\n    hf_dataset.save_to_disk(save_path)\n\
           \n    print(f\"\\n--- Finished in {(time.time() - start_time)/60:.2f} minutes\
           \ ---\")\n\n    return save_path\n\n"
-        image: python:3.10
+        image: kjh123456/qwen-base:v2
     exec-launch-training-job:
       container:
         args:
@@ -352,7 +352,7 @@ deploymentSpec:
           \                raise RuntimeError(f\"Job Failed: {last.get('message')}\"\
           )\n\n    print(f\"\\n--- Finished in {(time.time() - start_time)/60:.2f}\
           \ minutes ---\")\n\n    return output_dir_external\n\n"
-        image: python:3.10
+        image: kjh123456/qwen-base:v2
     exec-merge-adapter:
       container:
         args:
