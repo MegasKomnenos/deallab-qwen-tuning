@@ -2,13 +2,12 @@
 # Name: qwen-finetune-production
 # Inputs:
 #    data_pvc: str [Default: 'llm-data-pvc']
-#    dataset_name: str [Default: 'deepmind/pg19']
 #    force_download: bool [Default: True]
 #    max_steps: int [Default: 50.0]
 #    model_name: str [Default: 'Qwen/Qwen3-4B-Thinking-2507']
 #    model_pvc: str [Default: 'llm-workspace-pvc']
-#    subset_size: int [Default: 500.0]
-#    training_image_uri: str [Default: 'kjh123456/qwen-trainer:v22']
+#    playback_pvc: str [Default: 'llm-playback-pvc']
+#    training_image_uri: str [Default: 'kjh123456/qwen-trainer:v27']
 components:
   comp-download-dataset:
     executorLabel: exec-download-dataset
@@ -20,8 +19,6 @@ components:
           parameterType: STRING
         force_download:
           parameterType: BOOLEAN
-        subset_size:
-          parameterType: NUMBER_INTEGER
     outputDefinitions:
       parameters:
         Output:
@@ -35,6 +32,18 @@ components:
         model_name:
           parameterType: STRING
         model_root:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-download-playback:
+    executorLabel: exec-download-playback
+    inputDefinitions:
+      parameters:
+        force_download:
+          parameterType: BOOLEAN
+        playback_root:
           parameterType: STRING
     outputDefinitions:
       parameters:
@@ -59,6 +68,10 @@ components:
         model_pvc:
           parameterType: STRING
         model_root:
+          parameterType: STRING
+        playback_path:
+          parameterType: STRING
+        playback_pvc:
           parameterType: STRING
     outputDefinitions:
       parameters:
@@ -115,25 +128,33 @@ deploymentSpec:
 
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef download_dataset(\n    dataset_name: str,\n    data_root: str,\n\
-          \    force_download: bool,\n    subset_size: int\n) -> str:\n    import\
-          \ os\n    import shutil\n    from datasets import load_dataset, Dataset\
-          \ as HFDataset\n    import time\n    start_time = time.time()\n\n    save_path\
-          \ = os.path.join(data_root, \"raw\", \"pg19_large_cache\")\n\n    # ...\
-          \ (Cache check logic remains the same) ...\n    if os.path.exists(save_path):\n\
+          \ *\n\ndef download_dataset(\n    data_root: str,\n    dataset_name: str,\n\
+          \    force_download: bool\n) -> str:\n    import os\n    import shutil\n\
+          \    from datasets import load_dataset, Dataset\n    import time\n    start_time\
+          \ = time.time()\n\n    save_path = os.path.join(data_root, \"raw\", \"pg19\"\
+          )\n\n    # ... (Cache check logic remains the same) ...\n    if os.path.exists(save_path):\n\
           \        if force_download:\n            shutil.rmtree(save_path)\n    \
           \    else:\n            print(f\"Large cached dataset found at {save_path}.\
           \ Skipping download.\")\n            return save_path\n\n    ds = load_dataset(\n\
-          \        dataset_name,\n        split=\"train\",\n        streaming=True,\n\
-          \        trust_remote_code=True\n    )\n\n    data_list = []\n    count\
-          \ = 0\n\n    # Download a chunk\n    for item in ds:\n        if len(item['text'])\
-          \ > 5000:\n            data_list.append({\"text\": item['text']})\n    \
-          \        count += 1\n            if count >= subset_size:\n            \
-          \    break\n\n    print(f\"Saving {count} books to disk...\")\n    final_ds\
-          \ = HFDataset.from_list(data_list)\n    os.makedirs(save_path, exist_ok=True)\n\
-          \    final_ds.save_to_disk(save_path)\n\n    print(f\"\\n--- Finished in\
-          \ {(time.time() - start_time)/60:.2f} minutes ---\")\n\n    return save_path\n\
-          \n"
+          \        dataset_name,\n        split=\"train\",\n        streaming=True\n\
+          \    )\n\n    CHARS_PER_SAMPLE = 4096\n\n    def process_batch(items):\n\
+          \        out = []\n        for text in items['text']:\n            if len(text)\
+          \ < CHARS_PER_SAMPLE:\n                continue\n\n            buf = []\n\
+          \n            i, j = (0, CHARS_PER_SAMPLE)\n\n            while True:\n\
+          \                cur = text[i:j]\n\n                if not cur:\n      \
+          \              break\n\n                k = max(1, len(cur)//2)\n      \
+          \          buf.append([\n                    {\"role\": \"user\", \"content\"\
+          : cur[:k]},\n                    {\"role\": \"assistant\", \"content\":\
+          \ cur[k:]} \n                ])\n                i = i+k\n             \
+          \   j = min(len(text), j+k)\n                if 1.75*(j - i) < CHARS_PER_SAMPLE:\n\
+          \                    buf[-1][-1][\"content\"] += text[i:j]\n           \
+          \         break\n\n            out.extend(buf)\n\n        return { \"messages\"\
+          : out, \"type\": [\"style\"] * len(out) }\n\n    final_ds = ds.select_columns([\"\
+          text\"])\n    final_ds = final_ds.map(process_batch, batched=True, batch_size=16,\
+          \ remove_columns=[\"text\"])\n    final_ds = final_ds.select_columns([\"\
+          messages\", \"type\"])\n    os.makedirs(save_path, exist_ok=True)\n    final_ds.save_to_disk(save_path)\n\
+          \n    print(f\"\\n--- Finished in {(time.time() - start_time)/60:.2f} minutes\
+          \ ---\")\n\n    return save_path\n\n"
         image: python:3.10
     exec-download-model:
       container:
@@ -172,6 +193,84 @@ deploymentSpec:
           n--- Finished in {(time.time() - start_time)/60:.2f} minutes ---\")\n\n\
           \    return save_path\n\n"
         image: python:3.10
+    exec-download-playback:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - download_playback
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.13.0'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'datasets==2.19.0'\
+          \ 'huggingface_hub' 'scipy' 'requests' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef download_playback(\n    playback_root: str,\n    force_download:\
+          \ bool,\n) -> str:\n    import os\n    import shutil\n    from datasets\
+          \ import load_dataset, Dataset\n    import time\n    import json\n    import\
+          \ gzip\n    import requests\n\n    start_time = time.time()\n\n    save_path\
+          \ = os.path.join(playback_root, \"raw\", \"oasst2\")\n\n    # ... (Cache\
+          \ check logic remains the same) ...\n    if os.path.exists(save_path):\n\
+          \        if force_download:\n            shutil.rmtree(save_path)\n    \
+          \    else:\n            print(f\"Large cached dataset found at {save_path}.\
+          \ Skipping download.\")\n            return save_path\n\n    url = \"https://huggingface.co/datasets/OpenAssistant/oasst2/resolve/main/2023-11-05_oasst2_ready.trees.jsonl.gz\"\
+          \n\n    print(f\"Downloading and loading trees from {url}...\")\n\n    #\
+          \ 1. Stream the file directly from the web\n    # 2. Decompress on the fly\
+          \ using gzip\n    # 3. Parse each line as a JSON object\n    with requests.get(url,\
+          \ stream=True) as r:\n        r.raise_for_status()\n        # 'rt' mode\
+          \ opens the file in read-text mode, handling the gzip decompression\n  \
+          \      with gzip.open(r.raw, \"rt\", encoding=\"utf-8\") as f:\n       \
+          \     # Load all trees into a list\n            trees = [json.loads(line)\
+          \ for line in f]\n\n    print(f\"Successfully loaded {len(trees)} trees.\"\
+          )\n\n    role_map = {\n        \"prompter\": \"user\",\n        \"assistant\"\
+          : \"assistant\"\n    }\n\n    def extract_conversation_paths(node, current_history=None):\n\
+          \        \"\"\"\n        Recursive function to traverse the tree and extract\
+          \ all linear \n        conversation paths (Root -> Leaf).\n        \"\"\"\
+          \n        if current_history is None:\n            current_history = []\n\
+          \n        if node['role'] == \"assistant\" and (not \"labels\" in node or\
+          \ not \"quality\" in node[\"labels\"] or float(node[\"labels\"][\"quality\"\
+          ][\"value\"]) < 0.5):\n            return []\n\n        # create the message\
+          \ object for the current node\n        message = {\n            \"role\"\
+          : role_map.get(node['role'], node['role']),\n            \"content\": node['text']\n\
+          \        }\n\n        # Create a new history including this node\n     \
+          \   new_history = current_history + [message]\n\n        # If this is a\
+          \ leaf node (no replies), return the path\n        if not node.get('replies'):\n\
+          \            return [new_history]\n\n        # If there are replies, recurse\
+          \ down each branch\n        paths = []\n        for reply in node['replies']:\n\
+          \            paths.extend(extract_conversation_paths(reply, new_history))\n\
+          \        if len(paths) == 0:\n            paths = [new_history]\n      \
+          \  return paths\n\n    all_conversations = []\n\n    print(\"Processing\
+          \ trees into linear conversations...\")\n\n    for tree in trees:\n    \
+          \    if tree[\"prompt\"][\"lang\"] != \"en\":\n            continue\n\n\
+          \        paths = extract_conversation_paths(tree[\"prompt\"])\n\n      \
+          \  # Optional: Filter for quality here (e.g., only keep paths ending in\
+          \ assistant)\n        for path in paths:\n            while len(path) >\
+          \ 0 and path[-1][\"role\"] != \"assistant\":\n                path.pop()\n\
+          \n            if len(path) == 0:\n                continue\n\n         \
+          \   all_conversations.append(path)\n\n    print(f\"Extracted {len(all_conversations)}\
+          \ unique conversation paths.\")\n\n    # Create the Hugging Face Dataset\n\
+          \    # We wrap the list in a dict structure: {'messages': [ ... ]}\n   \
+          \ formatted_data = [{\"messages\": conv, \"type\": \"playback\"} for conv\
+          \ in all_conversations]\n\n    hf_dataset = Dataset.from_list(formatted_data)\n\
+          \    os.makedirs(save_path, exist_ok=True)\n    hf_dataset.save_to_disk(save_path)\n\
+          \n    print(f\"\\n--- Finished in {(time.time() - start_time)/60:.2f} minutes\
+          \ ---\")\n\n    return save_path\n\n"
+        image: python:3.10
     exec-launch-training-job:
       container:
         args:
@@ -200,31 +299,32 @@ deploymentSpec:
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef launch_training_job(\n    base_model_path: str,\n    data_path:\
-          \ str,\n    model_root: str,\n    image: str,\n    model_pvc: str,\n   \
-          \ data_pvc: str,\n    max_steps: int = 1\n) -> str:\n    import time\n \
-          \   from kubernetes import client, config\n    import time\n    start_time\
-          \ = time.time()\n\n    config.load_incluster_config()\n    api = client.CustomObjectsApi()\n\
-          \n    with open(\"/var/run/secrets/kubernetes.io/serviceaccount/namespace\"\
+          \ str,\n    playback_path: str,\n    model_root: str,\n    image: str,\n\
+          \    model_pvc: str,\n    data_pvc: str,\n    playback_pvc: str,\n    max_steps:\
+          \ int = 1\n) -> str:\n    import time\n    from kubernetes import client,\
+          \ config\n    import time\n    start_time = time.time()\n\n    config.load_incluster_config()\n\
+          \    api = client.CustomObjectsApi()\n\n    with open(\"/var/run/secrets/kubernetes.io/serviceaccount/namespace\"\
           ) as f:\n        namespace = f.read().strip()\n\n    job_name = f\"qwen-finetune-{int(time.time())}\"\
           \n    # Output dir must be inside the PVC mount\n    output_dir_internal\
           \ = f\"/mnt/models/checkpoints/{job_name}\"\n    output_dir_external = f\"\
           {model_root}/checkpoints/{job_name}\"\n\n    # Arguments passed strictly\
           \ to argparse in train.py\n    cmd_args = [\n        \"--base_model_path\"\
-          , base_model_path,\n        \"--data_path\", data_path,\n        \"--output_dir\"\
-          , output_dir_internal,\n        \"--max_steps\", str(max_steps)\n    ]\n\
-          \n    manifest = {\n        \"apiVersion\": \"kubeflow.org/v1\",\n     \
-          \   \"kind\": \"PyTorchJob\",\n        \"metadata\": {\"name\": job_name,\
-          \ \"namespace\": namespace},\n        \"spec\": {\n            \"pytorchReplicaSpecs\"\
-          : {\n                \"Master\": {\n                    \"replicas\": 1,\n\
-          \                    \"template\": {\n                        \"metadata\"\
-          : {\n                            \"annotations\": {\n                  \
-          \              \"sidecar.istio.io/inject\": \"false\"\n                \
-          \            }\n                        },\n                        \"spec\"\
-          : {\n                            \"containers\": [{\n                  \
+          , base_model_path,\n        \"--data_path\", data_path,\n        \"--playback_path\"\
+          , playback_path,\n        \"--output_dir\", output_dir_internal,\n     \
+          \   \"--max_steps\", str(max_steps)\n    ]\n\n    manifest = {\n       \
+          \ \"apiVersion\": \"kubeflow.org/v1\",\n        \"kind\": \"PyTorchJob\"\
+          ,\n        \"metadata\": {\"name\": job_name, \"namespace\": namespace},\n\
+          \        \"spec\": {\n            \"pytorchReplicaSpecs\": {\n         \
+          \       \"Master\": {\n                    \"replicas\": 1,\n          \
+          \          \"template\": {\n                        \"metadata\": {\n  \
+          \                          \"annotations\": {\n                        \
+          \        \"sidecar.istio.io/inject\": \"false\"\n                      \
+          \      }\n                        },\n                        \"spec\":\
+          \ {\n                            \"containers\": [{\n                  \
           \              \"name\": \"pytorch\",\n                                \"\
           image\": image,\n                                \"args\": cmd_args,\n \
           \                               \"resources\": {\n                     \
-          \               \"limits\": {\"nvidia.com/gpu\": 1, \"memory\": \"16Gi\"\
+          \               \"limits\": {\"nvidia.com/gpu\": 1, \"memory\": \"24Gi\"\
           , \"cpu\": \"4\"}, \n                                    \"requests\": {\"\
           cpu\": \"2\"}\n                                },\n                    \
           \            \"volumeMounts\": [\n                                    {\"\
@@ -236,10 +336,12 @@ deploymentSpec:
           \                    {\"name\": \"models\", \"persistentVolumeClaim\": {\"\
           claimName\": model_pvc}},\n                                {\"name\": \"\
           data\", \"persistentVolumeClaim\": {\"claimName\": data_pvc}},\n       \
-          \                         {\"name\": \"dshm\", \"emptyDir\": {\"medium\"\
-          : \"Memory\"}}\n                            ]\n                        }\n\
-          \                    }\n                }\n            }\n        }\n  \
-          \  }\n\n    print(f\"Submitting PyTorchJob {job_name}...\")\n    api.create_namespaced_custom_object(\"\
+          \                         {\"name\": \"playback\", \"persistentVolumeClaim\"\
+          : {\"claimName\": playback_pvc}},\n                                {\"name\"\
+          : \"dshm\", \"emptyDir\": {\"medium\": \"Memory\"}}\n                  \
+          \          ]\n                        }\n                    }\n       \
+          \         }\n            }\n        }\n    }\n\n    print(f\"Submitting\
+          \ PyTorchJob {job_name}...\")\n    api.create_namespaced_custom_object(\"\
           kubeflow.org\", \"v1\", namespace, \"pytorchjobs\", manifest)\n\n    while\
           \ True:\n        time.sleep(30)\n        status = api.get_namespaced_custom_object_status(\"\
           kubeflow.org\", \"v1\", namespace, \"pytorchjobs\", job_name)\n        conds\
@@ -374,11 +476,10 @@ root:
               runtimeValue:
                 constant: /mnt/data
             dataset_name:
-              componentInputParameter: dataset_name
+              runtimeValue:
+                constant: deepmind/pg19
             force_download:
               componentInputParameter: force_download
-            subset_size:
-              componentInputParameter: subset_size
         taskInfo:
           name: download-dataset
       download-model:
@@ -397,6 +498,20 @@ root:
                 constant: /mnt/models
         taskInfo:
           name: download-model
+      download-playback:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-download-playback
+        inputs:
+          parameters:
+            force_download:
+              componentInputParameter: force_download
+            playback_root:
+              runtimeValue:
+                constant: /mnt/playback
+        taskInfo:
+          name: download-playback
       launch-training-job:
         cachingOptions:
           enableCache: true
@@ -405,6 +520,7 @@ root:
         dependentTasks:
         - download-dataset
         - download-model
+        - download-playback
         inputs:
           parameters:
             base_model_path:
@@ -426,6 +542,12 @@ root:
             model_root:
               runtimeValue:
                 constant: /mnt/models
+            playback_path:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: download-playback
+            playback_pvc:
+              componentInputParameter: playback_pvc
         taskInfo:
           name: launch-training-job
       merge-adapter:
@@ -475,10 +597,6 @@ root:
         defaultValue: llm-data-pvc
         isOptional: true
         parameterType: STRING
-      dataset_name:
-        defaultValue: deepmind/pg19
-        isOptional: true
-        parameterType: STRING
       force_download:
         defaultValue: true
         isOptional: true
@@ -495,12 +613,12 @@ root:
         defaultValue: llm-workspace-pvc
         isOptional: true
         parameterType: STRING
-      subset_size:
-        defaultValue: 500.0
+      playback_pvc:
+        defaultValue: llm-playback-pvc
         isOptional: true
-        parameterType: NUMBER_INTEGER
+        parameterType: STRING
       training_image_uri:
-        defaultValue: kjh123456/qwen-trainer:v22
+        defaultValue: kjh123456/qwen-trainer:v27
         isOptional: true
         parameterType: STRING
 schemaVersion: 2.1.0
@@ -518,6 +636,10 @@ platforms:
           pvcMount:
           - componentInputParameter: model_pvc
             mountPath: /mnt/models
+        exec-download-playback:
+          pvcMount:
+          - componentInputParameter: playback_pvc
+            mountPath: /mnt/playback
         exec-merge-adapter:
           pvcMount:
           - componentInputParameter: model_pvc

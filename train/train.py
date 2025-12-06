@@ -7,7 +7,7 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    DataCollatorForLanguageModeling
+    DataCollatorForSeq2Seq
 )
 from trl import SFTTrainer, SFTConfig
 from peft import LoraConfig, prepare_model_for_kbit_training, TaskType
@@ -152,7 +152,7 @@ def train():
         dataset_kwargs={"skip_prepare_dataset": True}
     )
     
-    collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+    collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, mlm=False)
 
     trainer = SFTTrainer(
         model=model,

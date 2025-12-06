@@ -12,8 +12,9 @@ WORKER_IMAGE = "pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime"
 
 MOUNT_PATH_MODEL = "/mnt/models"
 MOUNT_PATH_DATA = "/mnt/data"
+MOUNT_PATH_PLAYBACK = "/mnt/playback"
 
-DATSET_NAME = "deepmind/pg19"
+DATASET_NAME = "deepmind/pg19"
 PLAYBACK_NAME = "OpenAssistant/oasst2"
 
 # -------------------------------------------------------------------------
@@ -42,11 +43,12 @@ def download_model(model_name: str, model_root: str, force_download: bool) -> st
 )
 def download_dataset(
     data_root: str,
+    dataset_name: str,
     force_download: bool
 ) -> str:
     import os
     import shutil
-    from datasets import load_dataset, Dataset as HFDataset
+    from datasets import load_dataset, Dataset
     import time
     start_time = time.time()
     
@@ -61,8 +63,9 @@ def download_dataset(
             return save_path
 
     ds = load_dataset(
-        DATSET_NAME,
-        split="train"
+        dataset_name,
+        split="train",
+        streaming=True
     )
     
     CHARS_PER_SAMPLE = 4096
@@ -70,12 +73,19 @@ def download_dataset(
     def process_batch(items):
         out = []
         for text in items['text']:
+            if len(text) < CHARS_PER_SAMPLE:
+                continue
+                
             buf = []
             
             i, j = (0, CHARS_PER_SAMPLE)
             
             while True:
                 cur = text[i:j]
+                
+                if not cur:
+                    break
+                    
                 k = max(1, len(cur)//2)
                 buf.append([
                     {"role": "user", "content": cur[:k]},
@@ -91,10 +101,9 @@ def download_dataset(
             
         return { "messages": out, "type": ["style"] * len(out) }
     
-    final_ds = ds.map(process_batch, batched=True, batch_size=64, remove_columns=["text"])
+    final_ds = ds.select_columns(["text"])
+    final_ds = final_ds.map(process_batch, batched=True, batch_size=16, remove_columns=["text"])
     final_ds = final_ds.select_columns(["messages", "type"])
-    
-    print(f"Total examples generated: {len(final_ds)}")
     os.makedirs(save_path, exist_ok=True)
     final_ds.save_to_disk(save_path)
     
@@ -107,12 +116,12 @@ def download_dataset(
     packages_to_install=["datasets==2.19.0", "huggingface_hub", "scipy", "requests"] 
 )
 def download_playback(
-    data_root: str,
+    playback_root: str,
     force_download: bool,
 ) -> str:
     import os
     import shutil
-    from datasets import load_dataset, Dataset as HFDataset
+    from datasets import load_dataset, Dataset
     import time
     import json
     import gzip
@@ -120,7 +129,7 @@ def download_playback(
     
     start_time = time.time()
     
-    save_path = os.path.join(data_root, "raw", "oasst2")
+    save_path = os.path.join(playback_root, "raw", "oasst2")
 
     # ... (Cache check logic remains the same) ...
     if os.path.exists(save_path):
@@ -159,7 +168,7 @@ def download_playback(
         if current_history is None:
             current_history = []
             
-        if node['role'] == "assistant" and (not "labels" in node or float(node["labels"]["quality"]["value"]) < 0.5):
+        if node['role'] == "assistant" and (not "labels" in node or not "quality" in node["labels"] or float(node["labels"]["quality"]["value"]) < 0.5):
             return []
 
         # create the message object for the current node
@@ -191,7 +200,7 @@ def download_playback(
         if tree["prompt"]["lang"] != "en":
             continue
             
-        paths = extract_conversation_paths(tree)
+        paths = extract_conversation_paths(tree["prompt"])
         
         # Optional: Filter for quality here (e.g., only keep paths ending in assistant)
         for path in paths:
@@ -209,7 +218,7 @@ def download_playback(
     # We wrap the list in a dict structure: {'messages': [ ... ]}
     formatted_data = [{"messages": conv, "type": "playback"} for conv in all_conversations]
     
-    hf_dataset = HFDataset.from_list(formatted_data)
+    hf_dataset = Dataset.from_list(formatted_data)
     os.makedirs(save_path, exist_ok=True)
     hf_dataset.save_to_disk(save_path)
     
@@ -229,6 +238,7 @@ def launch_training_job(
     image: str,
     model_pvc: str,
     data_pvc: str,
+    playback_pvc: str,
     max_steps: int = 1
 ) -> str:
     import time
@@ -288,6 +298,7 @@ def launch_training_job(
                             "volumes": [
                                 {"name": "models", "persistentVolumeClaim": {"claimName": model_pvc}},
                                 {"name": "data", "persistentVolumeClaim": {"claimName": data_pvc}},
+                                {"name": "playback", "persistentVolumeClaim": {"claimName": playback_pvc}},
                                 {"name": "dshm", "emptyDir": {"medium": "Memory"}}
                             ]
                         }
@@ -440,18 +451,19 @@ def llm_pipeline(
     model_name: str = "Qwen/Qwen3-4B-Thinking-2507", # Example model
     model_pvc: str = "llm-workspace-pvc",
     data_pvc: str = "llm-data-pvc",
-    training_image_uri: str = "kjh123456/qwen-trainer:v26",
+    playback_pvc: str = "llm-playback-pvc",
+    training_image_uri: str = "kjh123456/qwen-trainer:v27",
     force_download: bool = True,
     max_steps: int = 50,
 ):
     dl_model = download_model(model_name=model_name, model_root=MOUNT_PATH_MODEL, force_download=force_download)
     kubernetes.mount_pvc(dl_model, pvc_name=model_pvc, mount_path=MOUNT_PATH_MODEL)
 
-    dl_data = download_dataset(data_root=MOUNT_PATH_DATA, force_download=force_download)
+    dl_data = download_dataset(data_root=MOUNT_PATH_DATA, dataset_name=DATASET_NAME, force_download=force_download)
     kubernetes.mount_pvc(dl_data, pvc_name=data_pvc, mount_path=MOUNT_PATH_DATA)
     
-    dl_playback = download_playback(data_root=MOUNT_PATH_DATA, force_download=force_download)
-    kubernetes.mount_pvc(dl_playback, pvc_name=data_pvc, mount_path=MOUNT_PATH_DATA)
+    dl_playback = download_playback(playback_root=MOUNT_PATH_PLAYBACK, force_download=force_download)
+    kubernetes.mount_pvc(dl_playback, pvc_name=playback_pvc, mount_path=MOUNT_PATH_PLAYBACK)
 
     train_job = launch_training_job(
         base_model_path=dl_model.output,
@@ -461,6 +473,7 @@ def llm_pipeline(
         image=training_image_uri,
         model_pvc=model_pvc,
         data_pvc=data_pvc,
+        playback_pvc=playback_pvc,
         max_steps=max_steps
     ).after(dl_data)
 
