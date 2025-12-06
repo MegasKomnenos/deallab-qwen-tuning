@@ -152,7 +152,8 @@ deploymentSpec:
           : out, \"type\": [\"style\"] * len(out) }\n\n    final_ds = ds.select_columns([\"\
           text\"])\n    final_ds = final_ds.map(process_batch, batched=True, batch_size=16,\
           \ remove_columns=[\"text\"])\n    final_ds = final_ds.select_columns([\"\
-          messages\", \"type\"])\n    os.makedirs(save_path, exist_ok=True)\n    final_ds.save_to_disk(save_path)\n\
+          messages\", \"type\"])\n    final_ds = Dataset.from_generator(lambda: final_ds)\n\
+          \    os.makedirs(save_path, exist_ok=True)\n    final_ds.save_to_disk(save_path)\n\
           \n    print(f\"\\n--- Finished in {(time.time() - start_time)/60:.2f} minutes\
           \ ---\")\n\n    return save_path\n\n"
         image: python:3.10

@@ -2,6 +2,7 @@ import argparse
 import os
 import torch
 import random
+import bitsandbytes as bnb # Required for dequantization
 from datasets import load_from_disk
 from transformers import (
     AutoModelForCausalLM,
@@ -11,6 +12,79 @@ from transformers import (
 )
 from trl import SFTTrainer, SFTConfig
 from peft import LoraConfig, prepare_model_for_kbit_training, TaskType
+
+def apply_oplora(model, rank=16):
+    """
+    Applies OPLoRA (Orthogonal Projection LoRA).
+    Computes SVD of frozen base weights and adds hooks to project LoRA inputs/outputs
+    to the orthogonal complement of the top-k singular vectors.
+    """
+    print(f"--- Applying OPLoRA Projections (rank={rank}) ---")
+    count = 0
+    
+    # Iterate through all modules to find active LoRA adapters
+    for name, module in model.named_modules():
+        # Check if the module is a LoRA layer (has lora_A/B attributes)
+        if hasattr(module, "lora_A") and "default" in module.lora_A:
+            # Access the base layer (wrapped by PEFT)
+            base = getattr(module, "base_layer", module)
+            if not hasattr(base, "weight"): continue
+
+            # 1. Dequantize Base Weights (4-bit -> Float32) for SVD
+            # We need float32 for accurate decomposition
+            if isinstance(base.weight, bnb.nn.Params4bit):
+                w_data = bnb.functional.dequantize_4bit(
+                    base.weight.data, base.weight.quant_state
+                ).to(torch.float32)
+            else:
+                w_data = base.weight.data.to(torch.float32)
+
+            # 2. Compute SVD (Low-Rank Approximation)
+            # w_data shape: (out_features, in_features)
+            # U: (out, k), V: (in, k) (Note: svd_lowrank returns V, not V.T)
+            try:
+                U, S, V = torch.svd_lowrank(w_data, q=rank, niter=2)
+            except Exception as e:
+                print(f"Skipping OPLoRA for {name}: {e}")
+                continue
+
+            # Move projectors to device and cast to half precision for training speed
+            dtype = torch.float16
+            U_proj = U.to(base.weight.device).to(dtype) # Left Singular Vectors
+            V_proj = V.to(base.weight.device).to(dtype) # Right Singular Vectors
+
+            # 3. Define Projection Hooks
+            # P_R = I - V V^T (Project Input to Null(V^T))
+            def input_hook(V_ref):
+                def hook(module, args):
+                    x = args[0] # (Batch, Seq, In)
+                    orig_type = x.dtype
+                    x_c = x.to(V_ref.dtype)
+                    # Project: x - (x @ V) @ V.T
+                    proj = torch.matmul(torch.matmul(x_c, V_ref), V_ref.t())
+                    return ((x_c - proj).to(orig_type),) + args[1:]
+                return hook
+
+            # P_L = I - U U^T (Project Output to Null(U^T))
+            def output_hook(U_ref):
+                def hook(module, args, output): # Output: (Batch, Seq, Out)
+                    orig_type = output.dtype
+                    out_c = output.to(U_ref.dtype)
+                    # Project: y - (y @ U) @ U.T
+                    proj = torch.matmul(torch.matmul(out_c, U_ref), U_ref.t())
+                    return (out_c - proj).to(orig_type)
+                return hook
+
+            # 4. Register Hooks
+            # Apply P_R before lora_A and P_L after lora_B
+            module.lora_A["default"].register_forward_pre_hook(input_hook(V_proj))
+            module.lora_B["default"].register_forward_hook(output_hook(U_proj))
+            
+            count += 1
+            del w_data, U, S, V
+
+    torch.cuda.empty_cache()
+    print(f"OPLoRA setup complete. Applied to {count} layers.")
 
 def train():
     parser = argparse.ArgumentParser()
@@ -162,6 +236,12 @@ def train():
         processing_class=tokenizer,
         data_collator=collator
     )
+
+    # --- APPLY OPLoRA TRANSFORMATION ---
+    # We call this here to inject the hooks into the trainer's model 
+    # before training begins. Rank 16 matches the LoRA rank.
+    apply_oplora(trainer.model, rank=16)
+    # -----------------------------------
 
     print("Starting streaming training...")
     trainer.train()

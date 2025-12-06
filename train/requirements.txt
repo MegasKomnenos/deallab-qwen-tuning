@@ -10,3 +10,5 @@ tensorboard
 protobuf
 sentencepiece
 huggingface_hub
+bitsandbytes
+requests

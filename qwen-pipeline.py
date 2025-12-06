@@ -6,7 +6,7 @@ from kfp.dsl import Input, Output, Artifact, Model, Dataset, Metrics
 # -------------------------------------------------------------------------
 # CONFIGURATION
 # -------------------------------------------------------------------------
-BASE_IMAGE = "python:3.10"
+BASE_IMAGE = "kjh123456/qwen-base:v2"
 # Image used for Merge/Inference (Needs torch/transformers)
 WORKER_IMAGE = "pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime"
 
@@ -104,6 +104,7 @@ def download_dataset(
     final_ds = ds.select_columns(["text"])
     final_ds = final_ds.map(process_batch, batched=True, batch_size=16, remove_columns=["text"])
     final_ds = final_ds.select_columns(["messages", "type"])
+    final_ds = Dataset.from_generator(lambda: final_ds)
     os.makedirs(save_path, exist_ok=True)
     final_ds.save_to_disk(save_path)
     

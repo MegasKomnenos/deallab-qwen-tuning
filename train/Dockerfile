@@ -1,4 +1,4 @@
-FROM kjh123456/qwen-base:v1
+FROM kjh123456/qwen-base:v2
 
 WORKDIR /app
 
