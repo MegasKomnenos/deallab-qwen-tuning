@@ -5,9 +5,6 @@ metadata:
   namespace: kubeflow-user-example-com
   annotations:
     serving.kserve.io/deploymentMode: RawDeployment 
-    
-    # Optional: If you want to disable KServe's auto-HPA to manage replicas manually
-    # serving.kserve.io/autoscalerClass: "none"
 spec:
   predictor:
     model:
@@ -38,7 +35,7 @@ spec:
       args:
         - --port=8080
         - --model=/mnt/models 
-        - --served-model-name=qwen
+        - --served-model-name=qwen_merged_final
         - --gpu-memory-utilization=0.95
         - --max-model-len=6144
         - --trust-remote-code
