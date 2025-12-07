@@ -7,7 +7,7 @@
 #    model_name: str [Default: 'Qwen/Qwen3-4B-Thinking-2507']
 #    model_pvc: str [Default: 'llm-workspace-pvc']
 #    playback_pvc: str [Default: 'llm-playback-pvc']
-#    training_image_uri: str [Default: 'kjh123456/qwen-trainer:v30']
+#    training_image_uri: str [Default: 'kjh123456/qwen-trainer:v31']
 components:
   comp-download-dataset:
     executorLabel: exec-download-dataset
@@ -377,7 +377,7 @@ deploymentSpec:
           \ Float32 (CPU)\n    # We use Float32 to ensure the SVD calculation is stable/accurate.\n\
           \    print(\"Loading base model to System RAM (CPU, Float32)...\")\n   \
           \ base_model = AutoModelForCausalLM.from_pretrained(\n        base_model_path,\n\
-          \        torch_dtype=torch.float32, \n        device_map=\"cpu\",\n    \
+          \        torch_dtype=torch.float16, \n        device_map=\"cpu\",\n    \
           \    low_cpu_mem_usage=True,\n        trust_remote_code=True\n    )\n\n\
           \    # 2. Load Adapter\n    print(\"Loading LoRA adapter...\")\n    model\
           \ = PeftModel.from_pretrained(base_model, adapter_path)\n\n    # ------------------------------------------------------------------\n\
@@ -431,8 +431,8 @@ deploymentSpec:
           \ minutes ---\")\n\n    return save_path\n\n"
         image: pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
         resources:
-          memoryLimit: 25.769803776
-          resourceMemoryLimit: 24Gi
+          memoryLimit: 34.359738368
+          resourceMemoryLimit: 32Gi
     exec-run-inference:
       container:
         args:
@@ -646,7 +646,7 @@ root:
         isOptional: true
         parameterType: STRING
       training_image_uri:
-        defaultValue: kjh123456/qwen-trainer:v30
+        defaultValue: kjh123456/qwen-trainer:v31
         isOptional: true
         parameterType: STRING
 schemaVersion: 2.1.0

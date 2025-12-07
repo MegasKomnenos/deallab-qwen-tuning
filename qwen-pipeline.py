@@ -337,7 +337,7 @@ def merge_adapter(base_model_path: str, adapter_path: str, merged_root: str) -> 
     print("Loading base model to System RAM (CPU, Float32)...")
     base_model = AutoModelForCausalLM.from_pretrained(
         base_model_path,
-        torch_dtype=torch.float32, 
+        torch_dtype=torch.float16, 
         device_map="cpu",
         low_cpu_mem_usage=True,
         trust_remote_code=True
@@ -505,7 +505,7 @@ def llm_pipeline(
     model_pvc: str = "llm-workspace-pvc",
     data_pvc: str = "llm-data-pvc",
     playback_pvc: str = "llm-playback-pvc",
-    training_image_uri: str = "kjh123456/qwen-trainer:v30",
+    training_image_uri: str = "kjh123456/qwen-trainer:v31",
     force_download: bool = False,
     max_steps: int = 50,
 ):
@@ -537,7 +537,7 @@ def llm_pipeline(
     )
     kubernetes.mount_pvc(merge, pvc_name=model_pvc, mount_path=MOUNT_PATH_MODEL)
     # Give merge step plenty of CPU RAM
-    merge.set_memory_limit("24Gi") 
+    merge.set_memory_limit("32Gi") 
 
     inference = run_inference(
         model_path=merge.output,
