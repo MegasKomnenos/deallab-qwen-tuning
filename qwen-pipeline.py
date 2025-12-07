@@ -222,6 +222,7 @@ def launch_training_job(
     model_pvc: str,
     data_pvc: str,
     playback_pvc: str,
+    use_oplora: bool,
     max_steps: int = 1
 ) -> str:
     import time
@@ -246,6 +247,9 @@ def launch_training_job(
         "--output_dir", output_dir_internal,
         "--max_steps", str(max_steps)
     ]
+    
+    if use_oplora:
+        cmd_args.append("--use_oplora")
 
     manifest = {
         "apiVersion": "kubeflow.org/v1",
@@ -315,7 +319,12 @@ def launch_training_job(
     base_image=WORKER_IMAGE, 
     packages_to_install=["transformers", "torch", "peft", "accelerate", "bitsandbytes"]
 )
-def merge_adapter(base_model_path: str, adapter_path: str, merged_root: str) -> str:
+def merge_adapter(
+    base_model_path: str, 
+    adapter_path: str, 
+    merged_root: str, 
+    use_oplora: bool
+) -> str:
     import torch
     import os
     import gc
@@ -352,71 +361,74 @@ def merge_adapter(base_model_path: str, adapter_path: str, merged_root: str) -> 
     # We must project A and B into the orthogonal complement of W 
     # before merging, effectively "baking in" the hooks.
     # ------------------------------------------------------------------
-    print(f"Applying OPLoRA projections (Rank {OPLORA_RANK}) to weights...")
-    
-    with torch.no_grad():
-        count = 0
-        for name, module in model.named_modules():
-            # Check for LoRA layers
-            if hasattr(module, "lora_A") and "default" in module.lora_A:
-                base_layer = getattr(module, "base_layer", module)
-                if not hasattr(base_layer, "weight"): continue
-                
-                # 1. Compute SVD of Base Weight
-                # We cast to float32 for stability
-                w_data = base_layer.weight.data.to(torch.float32)
-                
-                safe_name = name.replace(".", "_")
-                u_path = os.path.join(adapter_path, "oplora_stats", f"{safe_name}_U.pt")
-                v_path = os.path.join(adapter_path, "oplora_stats", f"{safe_name}_V.pt")
-                
-                if os.path.exists(u_path):
-                    U = torch.load(u_path).to(torch.float32)
-                    V = torch.load(v_path).to(torch.float32)
+    if use_oplora:
+        print(f"Applying OPLoRA projections (Rank {OPLORA_RANK}) to weights...")
+        
+        with torch.no_grad():
+            count = 0
+            for name, module in model.named_modules():
+                # Check for LoRA layers
+                if hasattr(module, "lora_A") and "default" in module.lora_A:
+                    base_layer = getattr(module, "base_layer", module)
+                    if not hasattr(base_layer, "weight"): continue
                     
-                    # 2. Get LoRA Weights
-                    # A: (r, In), B: (Out, r)
-                    # Ensure they are float32 for the math
-                    lora_A_param = module.lora_A["default"].weight
-                    lora_B_param = module.lora_B["default"].weight
+                    # 1. Compute SVD of Base Weight
+                    # We cast to float32 for stability
+                    w_data = base_layer.weight.data.to(torch.float32)
                     
-                    A = lora_A_param.data.to(torch.float32)
-                    B = lora_B_param.data.to(torch.float32)
+                    safe_name = name.replace(".", "_")
+                    u_path = os.path.join(adapter_path, "oplora_stats", f"{safe_name}_U.pt")
+                    v_path = os.path.join(adapter_path, "oplora_stats", f"{safe_name}_V.pt")
                     
-                    # 3. Apply Projections (Bake the hooks into the weights)
+                    if os.path.exists(u_path):
+                        U = torch.load(u_path).to(torch.float32)
+                        V = torch.load(v_path).to(torch.float32)
+                        
+                        # 2. Get LoRA Weights
+                        # A: (r, In), B: (Out, r)
+                        # Ensure they are float32 for the math
+                        lora_A_param = module.lora_A["default"].weight
+                        lora_B_param = module.lora_B["default"].weight
+                        
+                        A = lora_A_param.data.to(torch.float32)
+                        B = lora_B_param.data.to(torch.float32)
+                        
+                        # 3. Apply Projections (Bake the hooks into the weights)
+                        
+                        # Input Projector: P_R = I - V V^T
+                        # A_new = A @ P_R = A - (A @ V) @ V^T
+                        
+                        # A @ V -> (r, In) @ (In, k) -> (r, k)
+                        AV = torch.matmul(A, V) 
+                        # AV @ V.T -> (r, k) @ (k, In) -> (r, In)
+                        A_correction = torch.matmul(AV, V.t())
+                        
+                        # Update A
+                        lora_A_param.data = (A - A_correction).to(lora_A_param.dtype)
+                        
+                        # Output Projector: P_L = I - U U^T
+                        # B_new = P_L @ B = B - U @ (U^T @ B)
+                        
+                        # U.T @ B -> (k, Out) @ (Out, r) -> (k, r)
+                        UtB = torch.matmul(U.t(), B)
+                        # U @ UtB -> (Out, k) @ (k, r) -> (Out, r)
+                        B_correction = torch.matmul(U, UtB)
+                        
+                        # Update B
+                        lora_B_param.data = (B - B_correction).to(lora_B_param.dtype)
+                        
+                        count += 1
+                        
+                        # Cleanup huge matrices immediately
+                        del U, V, AV, A_correction, UtB, B_correction, A, B
+                    else:
+                        print(f"Skipping OPLoRA for {name} (No stats found)")
                     
-                    # Input Projector: P_R = I - V V^T
-                    # A_new = A @ P_R = A - (A @ V) @ V^T
-                    
-                    # A @ V -> (r, In) @ (In, k) -> (r, k)
-                    AV = torch.matmul(A, V) 
-                    # AV @ V.T -> (r, k) @ (k, In) -> (r, In)
-                    A_correction = torch.matmul(AV, V.t())
-                    
-                    # Update A
-                    lora_A_param.data = (A - A_correction).to(lora_A_param.dtype)
-                    
-                    # Output Projector: P_L = I - U U^T
-                    # B_new = P_L @ B = B - U @ (U^T @ B)
-                    
-                    # U.T @ B -> (k, Out) @ (Out, r) -> (k, r)
-                    UtB = torch.matmul(U.t(), B)
-                    # U @ UtB -> (Out, k) @ (k, r) -> (Out, r)
-                    B_correction = torch.matmul(U, UtB)
-                    
-                    # Update B
-                    lora_B_param.data = (B - B_correction).to(lora_B_param.dtype)
-                    
-                    count += 1
-                    
-                    # Cleanup huge matrices immediately
-                    del U, V, AV, A_correction, UtB, B_correction, A, B
-                else:
-                    print(f"Skipping OPLoRA for {name} (No stats found)")
-                
-                del w_data
-    
-    print(f"OPLoRA transformation applied to {count} layers.")
+                    del w_data
+        
+        print(f"OPLoRA transformation applied to {count} layers.")
+    else:
+        print("Skipping OPLoRA projections (Standard QLoRA Merge).")
     
     # 3. Merge
     print("Merging weights...")
@@ -505,8 +517,9 @@ def llm_pipeline(
     model_pvc: str = "llm-workspace-pvc",
     data_pvc: str = "llm-data-pvc",
     playback_pvc: str = "llm-playback-pvc",
-    training_image_uri: str = "kjh123456/qwen-trainer:v31",
+    training_image_uri: str = "kjh123456/qwen-trainer:v32",
     force_download: bool = False,
+    use_oplora: bool = True,
     max_steps: int = 50,
 ):
     dl_model = download_model(model_name=model_name, model_root=MOUNT_PATH_MODEL, force_download=force_download)
@@ -527,13 +540,15 @@ def llm_pipeline(
         model_pvc=model_pvc,
         data_pvc=data_pvc,
         playback_pvc=playback_pvc,
-        max_steps=max_steps
+        max_steps=max_steps,
+        use_oplora=use_oplora
     ).after(dl_data)
 
     merge = merge_adapter(
         base_model_path=dl_model.output,
         adapter_path=train_job.output,
-        merged_root=MOUNT_PATH_MODEL
+        merged_root=MOUNT_PATH_MODEL,
+        use_oplora=use_oplora
     )
     kubernetes.mount_pvc(merge, pvc_name=model_pvc, mount_path=MOUNT_PATH_MODEL)
     # Give merge step plenty of CPU RAM

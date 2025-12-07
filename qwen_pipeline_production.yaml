@@ -7,7 +7,8 @@
 #    model_name: str [Default: 'Qwen/Qwen3-4B-Thinking-2507']
 #    model_pvc: str [Default: 'llm-workspace-pvc']
 #    playback_pvc: str [Default: 'llm-playback-pvc']
-#    training_image_uri: str [Default: 'kjh123456/qwen-trainer:v31']
+#    training_image_uri: str [Default: 'kjh123456/qwen-trainer:v32']
+#    use_oplora: bool [Default: True]
 components:
   comp-download-dataset:
     executorLabel: exec-download-dataset
@@ -73,6 +74,8 @@ components:
           parameterType: STRING
         playback_pvc:
           parameterType: STRING
+        use_oplora:
+          parameterType: BOOLEAN
     outputDefinitions:
       parameters:
         Output:
@@ -87,6 +90,8 @@ components:
           parameterType: STRING
         merged_root:
           parameterType: STRING
+        use_oplora:
+          parameterType: BOOLEAN
     outputDefinitions:
       parameters:
         Output:
@@ -288,57 +293,58 @@ deploymentSpec:
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
           \ *\n\ndef launch_training_job(\n    base_model_path: str,\n    data_path:\
           \ str,\n    playback_path: str,\n    model_root: str,\n    image: str,\n\
-          \    model_pvc: str,\n    data_pvc: str,\n    playback_pvc: str,\n    max_steps:\
-          \ int = 1\n) -> str:\n    import time\n    from kubernetes import client,\
-          \ config\n    import time\n    start_time = time.time()\n\n    config.load_incluster_config()\n\
-          \    api = client.CustomObjectsApi()\n\n    with open(\"/var/run/secrets/kubernetes.io/serviceaccount/namespace\"\
+          \    model_pvc: str,\n    data_pvc: str,\n    playback_pvc: str,\n    use_oplora:\
+          \ bool,\n    max_steps: int = 1\n) -> str:\n    import time\n    from kubernetes\
+          \ import client, config\n    import time\n    start_time = time.time()\n\
+          \n    config.load_incluster_config()\n    api = client.CustomObjectsApi()\n\
+          \n    with open(\"/var/run/secrets/kubernetes.io/serviceaccount/namespace\"\
           ) as f:\n        namespace = f.read().strip()\n\n    job_name = f\"qwen-finetune-{int(time.time())}\"\
           \n    output_dir_internal = f\"/mnt/models/checkpoints/{job_name}\"\n  \
           \  output_dir_external = f\"{model_root}/checkpoints/{job_name}\"\n\n  \
           \  cmd_args = [\n        \"--base_model_path\", base_model_path,\n     \
           \   \"--data_path\", data_path,\n        \"--playback_path\", playback_path,\n\
           \        \"--output_dir\", output_dir_internal,\n        \"--max_steps\"\
-          , str(max_steps)\n    ]\n\n    manifest = {\n        \"apiVersion\": \"\
-          kubeflow.org/v1\",\n        \"kind\": \"PyTorchJob\",\n        \"metadata\"\
-          : {\"name\": job_name, \"namespace\": namespace},\n        \"spec\": {\n\
-          \            \"pytorchReplicaSpecs\": {\n                \"Master\": {\n\
-          \                    \"replicas\": 1,\n                    \"template\"\
-          : {\n                        \"metadata\": {\n                         \
-          \   \"annotations\": {\n                                \"sidecar.istio.io/inject\"\
-          : \"false\"\n                            }\n                        },\n\
-          \                        \"spec\": {\n                            \"containers\"\
-          : [{\n                                \"name\": \"pytorch\",\n         \
-          \                       \"image\": image,\n                            \
-          \    \"args\": cmd_args,\n                                \"resources\"\
-          : {\n                                    \"limits\": {\"nvidia.com/gpu\"\
-          : 1, \"memory\": \"32Gi\", \"cpu\": \"4\"}, \n                         \
-          \           \"requests\": {\"cpu\": \"2\"}\n                           \
-          \     },\n                                \"volumeMounts\": [\n        \
-          \                            {\"name\": \"models\", \"mountPath\": \"/mnt/models\"\
-          },\n                                    {\"name\": \"data\", \"mountPath\"\
-          : \"/mnt/data\"},\n                                    {\"name\": \"playback\"\
-          , \"mountPath\": \"/mnt/playback\"},\n                                 \
-          \   {\"name\": \"dshm\", \"mountPath\": \"/dev/shm\"}\n                \
-          \                ]\n                            }],\n                  \
-          \          \"volumes\": [\n                                {\"name\": \"\
-          models\", \"persistentVolumeClaim\": {\"claimName\": model_pvc}},\n    \
-          \                            {\"name\": \"data\", \"persistentVolumeClaim\"\
-          : {\"claimName\": data_pvc}},\n                                {\"name\"\
-          : \"playback\", \"persistentVolumeClaim\": {\"claimName\": playback_pvc}},\n\
-          \                                {\"name\": \"dshm\", \"emptyDir\": {\"\
-          medium\": \"Memory\"}}\n                            ]\n                \
-          \        }\n                    }\n                }\n            }\n  \
-          \      }\n    }\n\n    print(f\"Submitting PyTorchJob {job_name}...\")\n\
-          \    api.create_namespaced_custom_object(\"kubeflow.org\", \"v1\", namespace,\
-          \ \"pytorchjobs\", manifest)\n\n    while True:\n        time.sleep(30)\n\
-          \        status = api.get_namespaced_custom_object_status(\"kubeflow.org\"\
-          , \"v1\", namespace, \"pytorchjobs\", job_name)\n        conds = status.get(\"\
-          status\", {}).get(\"conditions\", [])\n        if conds:\n            last\
-          \ = conds[-1]\n            if last[\"type\"] == \"Succeeded\":\n       \
-          \         break\n            if last[\"type\"] == \"Failed\":\n        \
-          \        raise RuntimeError(f\"Job Failed: {last.get('message')}\")\n\n\
-          \    print(f\"\\n--- Finished in {(time.time() - start_time)/60:.2f} minutes\
-          \ ---\")\n\n    return output_dir_external\n\n"
+          , str(max_steps)\n    ]\n\n    if use_oplora:\n        cmd_args.append(\"\
+          --use_oplora\")\n\n    manifest = {\n        \"apiVersion\": \"kubeflow.org/v1\"\
+          ,\n        \"kind\": \"PyTorchJob\",\n        \"metadata\": {\"name\": job_name,\
+          \ \"namespace\": namespace},\n        \"spec\": {\n            \"pytorchReplicaSpecs\"\
+          : {\n                \"Master\": {\n                    \"replicas\": 1,\n\
+          \                    \"template\": {\n                        \"metadata\"\
+          : {\n                            \"annotations\": {\n                  \
+          \              \"sidecar.istio.io/inject\": \"false\"\n                \
+          \            }\n                        },\n                        \"spec\"\
+          : {\n                            \"containers\": [{\n                  \
+          \              \"name\": \"pytorch\",\n                                \"\
+          image\": image,\n                                \"args\": cmd_args,\n \
+          \                               \"resources\": {\n                     \
+          \               \"limits\": {\"nvidia.com/gpu\": 1, \"memory\": \"32Gi\"\
+          , \"cpu\": \"4\"}, \n                                    \"requests\": {\"\
+          cpu\": \"2\"}\n                                },\n                    \
+          \            \"volumeMounts\": [\n                                    {\"\
+          name\": \"models\", \"mountPath\": \"/mnt/models\"},\n                 \
+          \                   {\"name\": \"data\", \"mountPath\": \"/mnt/data\"},\n\
+          \                                    {\"name\": \"playback\", \"mountPath\"\
+          : \"/mnt/playback\"},\n                                    {\"name\": \"\
+          dshm\", \"mountPath\": \"/dev/shm\"}\n                                ]\n\
+          \                            }],\n                            \"volumes\"\
+          : [\n                                {\"name\": \"models\", \"persistentVolumeClaim\"\
+          : {\"claimName\": model_pvc}},\n                                {\"name\"\
+          : \"data\", \"persistentVolumeClaim\": {\"claimName\": data_pvc}},\n   \
+          \                             {\"name\": \"playback\", \"persistentVolumeClaim\"\
+          : {\"claimName\": playback_pvc}},\n                                {\"name\"\
+          : \"dshm\", \"emptyDir\": {\"medium\": \"Memory\"}}\n                  \
+          \          ]\n                        }\n                    }\n       \
+          \         }\n            }\n        }\n    }\n\n    print(f\"Submitting\
+          \ PyTorchJob {job_name}...\")\n    api.create_namespaced_custom_object(\"\
+          kubeflow.org\", \"v1\", namespace, \"pytorchjobs\", manifest)\n\n    while\
+          \ True:\n        time.sleep(30)\n        status = api.get_namespaced_custom_object_status(\"\
+          kubeflow.org\", \"v1\", namespace, \"pytorchjobs\", job_name)\n        conds\
+          \ = status.get(\"status\", {}).get(\"conditions\", [])\n        if conds:\n\
+          \            last = conds[-1]\n            if last[\"type\"] == \"Succeeded\"\
+          :\n                break\n            if last[\"type\"] == \"Failed\":\n\
+          \                raise RuntimeError(f\"Job Failed: {last.get('message')}\"\
+          )\n\n    print(f\"\\n--- Finished in {(time.time() - start_time)/60:.2f}\
+          \ minutes ---\")\n\n    return output_dir_external\n\n"
         image: kjh123456/qwen-base:v2
     exec-merge-adapter:
       container:
@@ -367,64 +373,70 @@ deploymentSpec:
 
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef merge_adapter(base_model_path: str, adapter_path: str, merged_root:\
-          \ str) -> str:\n    import torch\n    import os\n    import gc\n    from\
-          \ transformers import AutoModelForCausalLM, AutoTokenizer\n    from peft\
-          \ import PeftModel\n    import time\n\n    start_time = time.time()\n\n\
-          \    # Must match the rank used in train.py\n    OPLORA_RANK = 16 \n\n \
-          \   print(f\"--- Merging OPLoRA Adapter ---\")\n    print(f\"Base: {base_model_path}\"\
-          )\n    print(f\"Adapter: {adapter_path}\")\n\n    # 1. Load Base Model in\
-          \ Float32 (CPU)\n    # We use Float32 to ensure the SVD calculation is stable/accurate.\n\
-          \    print(\"Loading base model to System RAM (CPU, Float32)...\")\n   \
-          \ base_model = AutoModelForCausalLM.from_pretrained(\n        base_model_path,\n\
-          \        torch_dtype=torch.float16, \n        device_map=\"cpu\",\n    \
-          \    low_cpu_mem_usage=True,\n        trust_remote_code=True\n    )\n\n\
-          \    # 2. Load Adapter\n    print(\"Loading LoRA adapter...\")\n    model\
-          \ = PeftModel.from_pretrained(base_model, adapter_path)\n\n    # ------------------------------------------------------------------\n\
+          \ *\n\ndef merge_adapter(\n    base_model_path: str, \n    adapter_path:\
+          \ str, \n    merged_root: str, \n    use_oplora: bool\n) -> str:\n    import\
+          \ torch\n    import os\n    import gc\n    from transformers import AutoModelForCausalLM,\
+          \ AutoTokenizer\n    from peft import PeftModel\n    import time\n\n   \
+          \ start_time = time.time()\n\n    # Must match the rank used in train.py\n\
+          \    OPLORA_RANK = 16 \n\n    print(f\"--- Merging OPLoRA Adapter ---\"\
+          )\n    print(f\"Base: {base_model_path}\")\n    print(f\"Adapter: {adapter_path}\"\
+          )\n\n    # 1. Load Base Model in Float32 (CPU)\n    # We use Float32 to\
+          \ ensure the SVD calculation is stable/accurate.\n    print(\"Loading base\
+          \ model to System RAM (CPU, Float32)...\")\n    base_model = AutoModelForCausalLM.from_pretrained(\n\
+          \        base_model_path,\n        torch_dtype=torch.float16, \n       \
+          \ device_map=\"cpu\",\n        low_cpu_mem_usage=True,\n        trust_remote_code=True\n\
+          \    )\n\n    # 2. Load Adapter\n    print(\"Loading LoRA adapter...\")\n\
+          \    model = PeftModel.from_pretrained(base_model, adapter_path)\n\n   \
+          \ # ------------------------------------------------------------------\n\
           \    # OPLoRA TRANSFORMATION\n    # We must project A and B into the orthogonal\
           \ complement of W \n    # before merging, effectively \"baking in\" the\
           \ hooks.\n    # ------------------------------------------------------------------\n\
-          \    print(f\"Applying OPLoRA projections (Rank {OPLORA_RANK}) to weights...\"\
-          )\n\n    with torch.no_grad():\n        count = 0\n        for name, module\
-          \ in model.named_modules():\n            # Check for LoRA layers\n     \
-          \       if hasattr(module, \"lora_A\") and \"default\" in module.lora_A:\n\
-          \                base_layer = getattr(module, \"base_layer\", module)\n\
-          \                if not hasattr(base_layer, \"weight\"): continue\n\n  \
-          \              # 1. Compute SVD of Base Weight\n                # We cast\
-          \ to float32 for stability\n                w_data = base_layer.weight.data.to(torch.float32)\n\
-          \n                safe_name = name.replace(\".\", \"_\")\n             \
-          \   u_path = os.path.join(adapter_path, \"oplora_stats\", f\"{safe_name}_U.pt\"\
-          )\n                v_path = os.path.join(adapter_path, \"oplora_stats\"\
-          , f\"{safe_name}_V.pt\")\n\n                if os.path.exists(u_path):\n\
-          \                    U = torch.load(u_path).to(torch.float32)\n        \
-          \            V = torch.load(v_path).to(torch.float32)\n\n              \
-          \      # 2. Get LoRA Weights\n                    # A: (r, In), B: (Out,\
-          \ r)\n                    # Ensure they are float32 for the math\n     \
-          \               lora_A_param = module.lora_A[\"default\"].weight\n     \
-          \               lora_B_param = module.lora_B[\"default\"].weight\n\n   \
-          \                 A = lora_A_param.data.to(torch.float32)\n            \
-          \        B = lora_B_param.data.to(torch.float32)\n\n                   \
-          \ # 3. Apply Projections (Bake the hooks into the weights)\n\n         \
-          \           # Input Projector: P_R = I - V V^T\n                    # A_new\
-          \ = A @ P_R = A - (A @ V) @ V^T\n\n                    # A @ V -> (r, In)\
-          \ @ (In, k) -> (r, k)\n                    AV = torch.matmul(A, V) \n  \
-          \                  # AV @ V.T -> (r, k) @ (k, In) -> (r, In)\n         \
-          \           A_correction = torch.matmul(AV, V.t())\n\n                 \
-          \   # Update A\n                    lora_A_param.data = (A - A_correction).to(lora_A_param.dtype)\n\
-          \n                    # Output Projector: P_L = I - U U^T\n            \
-          \        # B_new = P_L @ B = B - U @ (U^T @ B)\n\n                    #\
-          \ U.T @ B -> (k, Out) @ (Out, r) -> (k, r)\n                    UtB = torch.matmul(U.t(),\
-          \ B)\n                    # U @ UtB -> (Out, k) @ (k, r) -> (Out, r)\n \
-          \                   B_correction = torch.matmul(U, UtB)\n\n            \
-          \        # Update B\n                    lora_B_param.data = (B - B_correction).to(lora_B_param.dtype)\n\
-          \n                    count += 1\n\n                    # Cleanup huge matrices\
-          \ immediately\n                    del U, V, AV, A_correction, UtB, B_correction,\
-          \ A, B\n                else:\n                    print(f\"Skipping OPLoRA\
-          \ for {name} (No stats found)\")\n\n                del w_data\n\n    print(f\"\
-          OPLoRA transformation applied to {count} layers.\")\n\n    # 3. Merge\n\
-          \    print(\"Merging weights...\")\n    model = model.merge_and_unload()\n\
-          \n    # 4. Save\n    save_path = os.path.join(merged_root, \"qwen_merged_final\"\
-          )\n    print(f\"Saving merged model to {save_path}...\")\n    model.save_pretrained(save_path)\n\
+          \    if use_oplora:\n        print(f\"Applying OPLoRA projections (Rank\
+          \ {OPLORA_RANK}) to weights...\")\n\n        with torch.no_grad():\n   \
+          \         count = 0\n            for name, module in model.named_modules():\n\
+          \                # Check for LoRA layers\n                if hasattr(module,\
+          \ \"lora_A\") and \"default\" in module.lora_A:\n                    base_layer\
+          \ = getattr(module, \"base_layer\", module)\n                    if not\
+          \ hasattr(base_layer, \"weight\"): continue\n\n                    # 1.\
+          \ Compute SVD of Base Weight\n                    # We cast to float32 for\
+          \ stability\n                    w_data = base_layer.weight.data.to(torch.float32)\n\
+          \n                    safe_name = name.replace(\".\", \"_\")\n         \
+          \           u_path = os.path.join(adapter_path, \"oplora_stats\", f\"{safe_name}_U.pt\"\
+          )\n                    v_path = os.path.join(adapter_path, \"oplora_stats\"\
+          , f\"{safe_name}_V.pt\")\n\n                    if os.path.exists(u_path):\n\
+          \                        U = torch.load(u_path).to(torch.float32)\n    \
+          \                    V = torch.load(v_path).to(torch.float32)\n\n      \
+          \                  # 2. Get LoRA Weights\n                        # A: (r,\
+          \ In), B: (Out, r)\n                        # Ensure they are float32 for\
+          \ the math\n                        lora_A_param = module.lora_A[\"default\"\
+          ].weight\n                        lora_B_param = module.lora_B[\"default\"\
+          ].weight\n\n                        A = lora_A_param.data.to(torch.float32)\n\
+          \                        B = lora_B_param.data.to(torch.float32)\n\n   \
+          \                     # 3. Apply Projections (Bake the hooks into the weights)\n\
+          \n                        # Input Projector: P_R = I - V V^T\n         \
+          \               # A_new = A @ P_R = A - (A @ V) @ V^T\n\n              \
+          \          # A @ V -> (r, In) @ (In, k) -> (r, k)\n                    \
+          \    AV = torch.matmul(A, V) \n                        # AV @ V.T -> (r,\
+          \ k) @ (k, In) -> (r, In)\n                        A_correction = torch.matmul(AV,\
+          \ V.t())\n\n                        # Update A\n                       \
+          \ lora_A_param.data = (A - A_correction).to(lora_A_param.dtype)\n\n    \
+          \                    # Output Projector: P_L = I - U U^T\n             \
+          \           # B_new = P_L @ B = B - U @ (U^T @ B)\n\n                  \
+          \      # U.T @ B -> (k, Out) @ (Out, r) -> (k, r)\n                    \
+          \    UtB = torch.matmul(U.t(), B)\n                        # U @ UtB ->\
+          \ (Out, k) @ (k, r) -> (Out, r)\n                        B_correction =\
+          \ torch.matmul(U, UtB)\n\n                        # Update B\n         \
+          \               lora_B_param.data = (B - B_correction).to(lora_B_param.dtype)\n\
+          \n                        count += 1\n\n                        # Cleanup\
+          \ huge matrices immediately\n                        del U, V, AV, A_correction,\
+          \ UtB, B_correction, A, B\n                    else:\n                 \
+          \       print(f\"Skipping OPLoRA for {name} (No stats found)\")\n\n    \
+          \                del w_data\n\n        print(f\"OPLoRA transformation applied\
+          \ to {count} layers.\")\n    else:\n        print(\"Skipping OPLoRA projections\
+          \ (Standard QLoRA Merge).\")\n\n    # 3. Merge\n    print(\"Merging weights...\"\
+          )\n    model = model.merge_and_unload()\n\n    # 4. Save\n    save_path\
+          \ = os.path.join(merged_root, \"qwen_merged_final\")\n    print(f\"Saving\
+          \ merged model to {save_path}...\")\n    model.save_pretrained(save_path)\n\
           \n    tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)\n\
           \    tokenizer.save_pretrained(save_path)\n\n    del model\n    del base_model\n\
           \    gc.collect()\n\n    print(f\"\\n--- Finished in {(time.time() - start_time)/60:.2f}\
@@ -576,6 +588,8 @@ root:
                 producerTask: download-playback
             playback_pvc:
               componentInputParameter: playback_pvc
+            use_oplora:
+              componentInputParameter: use_oplora
         taskInfo:
           name: launch-training-job
       merge-adapter:
@@ -599,6 +613,8 @@ root:
             merged_root:
               runtimeValue:
                 constant: /mnt/models
+            use_oplora:
+              componentInputParameter: use_oplora
         taskInfo:
           name: merge-adapter
       run-inference:
@@ -646,9 +662,13 @@ root:
         isOptional: true
         parameterType: STRING
       training_image_uri:
-        defaultValue: kjh123456/qwen-trainer:v31
+        defaultValue: kjh123456/qwen-trainer:v32
         isOptional: true
         parameterType: STRING
+      use_oplora:
+        defaultValue: true
+        isOptional: true
+        parameterType: BOOLEAN
 schemaVersion: 2.1.0
 sdkVersion: kfp-2.13.0
 ---

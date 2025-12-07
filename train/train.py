@@ -99,9 +99,14 @@ def train():
     parser.add_argument("--playback_path", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--max_steps", type=int, default=50) 
+    parser.add_argument("--use_oplora", action="store_true", help="Enable OPLoRA orthogonal projections")
     args = parser.parse_args()
 
     print(f"--- Starting Standard Streaming Job (v10) ---")
+    if args.use_oplora:
+        print(">> OPLoRA is ENABLED")
+    else:
+        print(">> OPLoRA is DISABLED (Standard QLoRA)")
 
     # ------------------------------------------------------------------
     # 1. SETUP MODEL & TOKENIZER
@@ -243,11 +248,10 @@ def train():
         data_collator=collator
     )
 
-    # --- APPLY OPLoRA TRANSFORMATION ---
-    # We call this here to inject the hooks into the trainer's model 
-    # before training begins. Rank 16 matches the LoRA rank.
-    apply_oplora(trainer.model, args.output_dir, rank=16)
-    # -----------------------------------
+    if args.use_oplora:
+        apply_oplora(trainer.model, args.output_dir, rank=16)
+    else:
+        print("Skipping OPLoRA hooks. Proceeding with standard QLoRA training.")
 
     print("Starting streaming training...")
     trainer.train()
