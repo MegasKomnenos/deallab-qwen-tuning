@@ -246,7 +246,7 @@ def train():
     # --- APPLY OPLoRA TRANSFORMATION ---
     # We call this here to inject the hooks into the trainer's model 
     # before training begins. Rank 16 matches the LoRA rank.
-    apply_oplora(trainer.model, rank=16)
+    apply_oplora(trainer.model, args.output_dir, rank=16)
     # -----------------------------------
 
     print("Starting streaming training...")
