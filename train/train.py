@@ -13,7 +13,7 @@ from transformers import (
 from trl import SFTTrainer, SFTConfig
 from peft import LoraConfig, prepare_model_for_kbit_training, TaskType
 
-def apply_oplora(model, rank=16):
+def apply_oplora(model, output_dir, rank=16):
     """
     Applies OPLoRA (Orthogonal Projection LoRA).
     Computes SVD of frozen base weights and adds hooks to project LoRA inputs/outputs
@@ -47,9 +47,9 @@ def apply_oplora(model, rank=16):
                 
                 # SAVE ARTIFACTS
                 safe_name = name.replace(".", "_")
-                os.makedirs(os.path.join(args.output_dir, "oplora_stats"), exist_ok=True)
-                torch.save(U.cpu(), os.path.join(args.output_dir, "oplora_stats", f"{safe_name}_U.pt"))
-                torch.save(V.cpu(), os.path.join(args.output_dir, "oplora_stats", f"{safe_name}_V.pt"))
+                os.makedirs(os.path.join(output_dir, "oplora_stats"), exist_ok=True)
+                torch.save(U.cpu(), os.path.join(output_dir, "oplora_stats", f"{safe_name}_U.pt"))
+                torch.save(V.cpu(), os.path.join(output_dir, "oplora_stats", f"{safe_name}_V.pt"))
             except Exception as e:
                 print(f"Skipping OPLoRA for {name}: {e}")
                 continue
