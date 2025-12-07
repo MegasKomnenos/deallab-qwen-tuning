@@ -267,12 +267,13 @@ def launch_training_job(
                                 "image": image,
                                 "args": cmd_args,
                                 "resources": {
-                                    "limits": {"nvidia.com/gpu": 1, "memory": "24Gi", "cpu": "4"}, 
+                                    "limits": {"nvidia.com/gpu": 1, "memory": "32Gi", "cpu": "4"}, 
                                     "requests": {"cpu": "2"}
                                 },
                                 "volumeMounts": [
                                     {"name": "models", "mountPath": "/mnt/models"},
                                     {"name": "data", "mountPath": "/mnt/data"},
+                                    {"name": "playback", "mountPath": "/mnt/playback"},
                                     {"name": "dshm", "mountPath": "/dev/shm"}
                                 ]
                             }],
@@ -365,50 +366,55 @@ def merge_adapter(base_model_path: str, adapter_path: str, merged_root: str) -> 
                 # We cast to float32 for stability
                 w_data = base_layer.weight.data.to(torch.float32)
                 
-                try:
-                    # U: (Out, k), V: (In, k)
-                    U, S, V = torch.svd_lowrank(w_data, q=OPLORA_RANK, niter=2)
-                except Exception as e:
-                    print(f"SVD failed for {name}: {e}. Skipping projection.")
-                    continue
+                safe_name = name.replace(".", "_")
+                u_path = os.path.join(adapter_path, "oplora_stats", f"{safe_name}_U.pt")
+                v_path = os.path.join(adapter_path, "oplora_stats", f"{safe_name}_V.pt")
                 
-                # 2. Get LoRA Weights
-                # A: (r, In), B: (Out, r)
-                # Ensure they are float32 for the math
-                lora_A_param = module.lora_A["default"].weight
-                lora_B_param = module.lora_B["default"].weight
+                if os.path.exists(u_path):
+                    U = torch.load(u_path).to(torch.float32)
+                    V = torch.load(v_path).to(torch.float32)
+                    
+                    # 2. Get LoRA Weights
+                    # A: (r, In), B: (Out, r)
+                    # Ensure they are float32 for the math
+                    lora_A_param = module.lora_A["default"].weight
+                    lora_B_param = module.lora_B["default"].weight
+                    
+                    A = lora_A_param.data.to(torch.float32)
+                    B = lora_B_param.data.to(torch.float32)
+                    
+                    # 3. Apply Projections (Bake the hooks into the weights)
+                    
+                    # Input Projector: P_R = I - V V^T
+                    # A_new = A @ P_R = A - (A @ V) @ V^T
+                    
+                    # A @ V -> (r, In) @ (In, k) -> (r, k)
+                    AV = torch.matmul(A, V) 
+                    # AV @ V.T -> (r, k) @ (k, In) -> (r, In)
+                    A_correction = torch.matmul(AV, V.t())
+                    
+                    # Update A
+                    lora_A_param.data = (A - A_correction).to(lora_A_param.dtype)
+                    
+                    # Output Projector: P_L = I - U U^T
+                    # B_new = P_L @ B = B - U @ (U^T @ B)
+                    
+                    # U.T @ B -> (k, Out) @ (Out, r) -> (k, r)
+                    UtB = torch.matmul(U.t(), B)
+                    # U @ UtB -> (Out, k) @ (k, r) -> (Out, r)
+                    B_correction = torch.matmul(U, UtB)
+                    
+                    # Update B
+                    lora_B_param.data = (B - B_correction).to(lora_B_param.dtype)
+                    
+                    count += 1
+                    
+                    # Cleanup huge matrices immediately
+                    del U, V, AV, A_correction, UtB, B_correction, A, B
+                else:
+                    print(f"Skipping OPLoRA for {name} (No stats found)")
                 
-                A = lora_A_param.data.to(torch.float32)
-                B = lora_B_param.data.to(torch.float32)
-                
-                # 3. Apply Projections (Bake the hooks into the weights)
-                
-                # Input Projector: P_R = I - V V^T
-                # A_new = A @ P_R = A - (A @ V) @ V^T
-                
-                # A @ V -> (r, In) @ (In, k) -> (r, k)
-                AV = torch.matmul(A, V) 
-                # AV @ V.T -> (r, k) @ (k, In) -> (r, In)
-                A_correction = torch.matmul(AV, V.t())
-                
-                # Update A
-                lora_A_param.data = (A - A_correction).to(lora_A_param.dtype)
-                
-                # Output Projector: P_L = I - U U^T
-                # B_new = P_L @ B = B - U @ (U^T @ B)
-                
-                # U.T @ B -> (k, Out) @ (Out, r) -> (k, r)
-                UtB = torch.matmul(U.t(), B)
-                # U @ UtB -> (Out, k) @ (k, r) -> (Out, r)
-                B_correction = torch.matmul(U, UtB)
-                
-                # Update B
-                lora_B_param.data = (B - B_correction).to(lora_B_param.dtype)
-                
-                count += 1
-                
-                # Cleanup huge matrices immediately
-                del w_data, U, S, V, AV, A_correction, UtB, B_correction, A, B
+                del w_data
     
     print(f"OPLoRA transformation applied to {count} layers.")
     
@@ -499,8 +505,8 @@ def llm_pipeline(
     model_pvc: str = "llm-workspace-pvc",
     data_pvc: str = "llm-data-pvc",
     playback_pvc: str = "llm-playback-pvc",
-    training_image_uri: str = "kjh123456/qwen-trainer:v27",
-    force_download: bool = True,
+    training_image_uri: str = "kjh123456/qwen-trainer:v28",
+    force_download: bool = False,
     max_steps: int = 50,
 ):
     dl_model = download_model(model_name=model_name, model_root=MOUNT_PATH_MODEL, force_download=force_download)

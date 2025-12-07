@@ -44,6 +44,12 @@ def apply_oplora(model, rank=16):
             # U: (out, k), V: (in, k) (Note: svd_lowrank returns V, not V.T)
             try:
                 U, S, V = torch.svd_lowrank(w_data, q=rank, niter=2)
+                
+                # SAVE ARTIFACTS
+                safe_name = name.replace(".", "_")
+                os.makedirs(os.path.join(args.output_dir, "oplora_stats"), exist_ok=True)
+                torch.save(U.cpu(), os.path.join(args.output_dir, "oplora_stats", f"{safe_name}_U.pt"))
+                torch.save(V.cpu(), os.path.join(args.output_dir, "oplora_stats", f"{safe_name}_V.pt"))
             except Exception as e:
                 print(f"Skipping OPLoRA for {name}: {e}")
                 continue
