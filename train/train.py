@@ -232,7 +232,7 @@ def train():
         dataset_kwargs={"skip_prepare_dataset": True}
     )
     
-    collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, mlm=False)
+    collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, model=model)
 
     trainer = SFTTrainer(
         model=model,

@@ -505,7 +505,7 @@ def llm_pipeline(
     model_pvc: str = "llm-workspace-pvc",
     data_pvc: str = "llm-data-pvc",
     playback_pvc: str = "llm-playback-pvc",
-    training_image_uri: str = "kjh123456/qwen-trainer:v28",
+    training_image_uri: str = "kjh123456/qwen-trainer:v30",
     force_download: bool = False,
     max_steps: int = 50,
 ):
